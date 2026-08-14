@@ -230,6 +230,7 @@
         .media-source-box { display:none;padding:8px;margin:6px 0 9px;border:1px solid rgba(79,172,254,.32);background:rgba(79,172,254,.07);border-radius:8px;font-size:9px;line-height:1.45;color:#dfe9f7; }
         .media-source-box.active { display:block; }
         .media-source-box button { width:100%;margin-top:6px;padding:7px;border:1px solid rgba(255,255,255,.14);border-radius:7px;background:#191925;color:#fff;cursor:pointer;font-size:10px;font-weight:700; }
+        .media-source-devices{display:flex;flex-direction:column;gap:5px;margin-top:7px}.media-source-device{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center;padding:6px 7px;border:1px solid rgba(255,255,255,.10);border-radius:7px;background:rgba(0,0,0,.18)}.media-source-device.active{border-color:rgba(79,172,254,.65);background:rgba(79,172,254,.12)}.media-source-device .device-label{font-size:9px;color:#eef6ff}.media-source-device .device-state{font-size:8px;color:var(--text-dim)}.media-source-device button{width:auto!important;margin:0!important;padding:5px 7px!important;font-size:9px!important}
         @media(max-width:700px){.v6-point-grid{grid-template-columns:1fr}.v6-dot-input{grid-template-columns:minmax(0,1fr) 72px}}
 
         /* SIDEBAR */
@@ -829,7 +830,7 @@
             <div class="room-info-row"><span class="label">Jogadores</span><span class="value" id="roomPlayerCount">1/8</span></div>
             <div class="section-title" style="margin-top:8px;">Áudio e vídeo deste aparelho</div>
             <div style="font-size:9px;color:var(--text-dim);line-height:1.4;margin-bottom:6px;">A saída de som é escolhida automaticamente pelo aparelho (fone, Bluetooth ou alto-falante). Se o mesmo jogador entrar em dois aparelhos, escolha abaixo qual deles enviará câmera e microfone.</div>
-            <div class="media-source-box" id="mediaSourceBox"><div id="mediaSourceStatus">Este aparelho está usando a câmera e o microfone.</div><button type="button" id="claimMediaSourceBtn" onclick="claimThisDeviceForMedia()">📱 Usar câmera e microfone deste aparelho</button></div>
+            <div class="media-source-box" id="mediaSourceBox"><div id="mediaSourceStatus">Este aparelho está usando a câmera e o microfone.</div><div class="media-source-devices" id="mediaSourceDevices"></div><button type="button" id="claimMediaSourceBtn" onclick="claimThisDeviceForMedia()">📱 Usar câmera e microfone deste aparelho</button></div>
             <div class="control-group" id="cameraDeviceGroup" style="display:none;">
                 <label>Câmera</label>
                 <select id="cameraSelect" onchange="changeCameraDevice(this.value)"><option value="">Padrão do aparelho</option></select>
@@ -1243,11 +1244,19 @@ function initSocket() {
                 await activateThisDeviceAsMediaSource(true);
             }else{
                 await disableLocalCallMedia(true);
+                // O outro aparelho do mesmo jogador também precisa de uma conexão WebRTC
+                // ativa para que este computador receba sua câmera e seu microfone.
+                const pc=state.peerConnections[data.socketId];
+                if(!pc || pc.signalingState==='closed' || pc.connectionState==='failed'){
+                    if(shouldInitiatePeer(data.socketId)) setTimeout(()=>createPeerOffer(data.socketId,true).catch(()=>{}),80);
+                    else state.socket?.emit('webrtc-reconnect-request',{target:data.socketId});
+                }
             }
         }
         refreshMediaSourceChooser(data.deviceCount);
         renderVideoLayout();
-        setTimeout(()=>attachLogicalMedia(data.ownerKey),80);
+        setTimeout(()=>attachLogicalMedia(data.ownerKey),120);
+        setTimeout(ensurePeerMesh,250);
     });
     state.socket.on('media-state', data => {
         if(state.players[data.id]) Object.assign(state.players[data.id], {cameraOn:data.cameraOn,micOn:data.micOn,screenSharing:data.screenSharing});
@@ -1404,15 +1413,23 @@ function ownDeviceEndpoints(){
     return Object.values(state.players).filter(p=>logicalKeyForPlayer(p)===state.ownerKey);
 }
 function refreshMediaSourceChooser(deviceCount){
-    const box=document.getElementById('mediaSourceBox'), status=document.getElementById('mediaSourceStatus'), btn=document.getElementById('claimMediaSourceBtn');
+    const box=document.getElementById('mediaSourceBox'), status=document.getElementById('mediaSourceStatus'), btn=document.getElementById('claimMediaSourceBtn'), list=document.getElementById('mediaSourceDevices');
     if(!box) return;
-    const endpoints=ownDeviceEndpoints(), count=Number(deviceCount)||endpoints.length;
-    if(count<2){ box.classList.remove('active'); return; }
+    const endpoints=ownDeviceEndpoints().sort((a,b)=>(a.deviceIndex||0)-(b.deviceIndex||0)), count=Number(deviceCount)||endpoints.length;
+    if(count<2){ box.classList.remove('active'); if(list)list.innerHTML=''; return; }
     box.classList.add('active');
     const selected=state.mediaSources?.[state.ownerKey];
     const thisDevice=selected===state.socketId;
-    if(status) status.innerHTML=thisDevice ? '<b>Este aparelho</b> está enviando sua câmera e microfone para a sala.' : 'Outro aparelho seu está enviando a câmera e o microfone. Este aparelho continua recebendo normalmente a chamada.';
-    if(btn){ btn.style.display=thisDevice?'none':'block'; btn.textContent='📱 Usar câmera e microfone deste aparelho'; }
+    if(status) status.innerHTML=thisDevice ? '<b>Este aparelho</b> está enviando sua câmera e microfone para a sala.' : 'Seu outro aparelho está enviando câmera e microfone. Você pode trocar a fonte abaixo sem criar outro jogador.';
+    if(list){
+        list.innerHTML=endpoints.map((p,i)=>{
+            const active=p.id===selected, here=p.id===state.socketId;
+            const media=`${p.cameraOn?'📹':'📷'} ${p.micOn?'🎤':'🔇'}`;
+            const label=`Aparelho ${p.deviceIndex||i+1}${here?' · este aparelho':''}`;
+            return `<div class="media-source-device ${active?'active':''}"><div><div class="device-label">${escapeHtml(label)}</div><div class="device-state">${media}${active?' · fonte ativa':''}</div></div><button type="button" ${active?'disabled':''} onclick="selectMediaSourceDevice('${String(p.id).replace(/'/g,"\'")}')">${active?'✓ Em uso':'Usar'}</button></div>`;
+        }).join('');
+    }
+    if(btn){ btn.style.display=thisDevice?'none':'block'; btn.textContent='📱 Usar este aparelho'; }
 }
 async function disableLocalCallMedia(silent=false){
     if(state.isScreenSharing){ try{state.screenStream?.getTracks().forEach(t=>t.stop());}catch(_){} state.screenStream=null; state.isScreenSharing=false; }
@@ -1434,10 +1451,16 @@ async function activateThisDeviceAsMediaSource(silent=false){
         if(!silent) showToast('Este aparelho agora envia sua câmera e microfone.','success');
     }catch(_){ if(!silent) showMediaGate(); }
 }
+async function selectMediaSourceDevice(socketId){
+    if(!socketId) return;
+    if(socketId===state.socketId){
+        await activateThisDeviceAsMediaSource(false);
+    }
+    if(state.socket?.connected) state.socket.emit('select-media-source',{socketId});
+}
 async function claimThisDeviceForMedia(){
     if(!state.socket?.connected) return activateThisDeviceAsMediaSource(false);
-    await activateThisDeviceAsMediaSource(false);
-    state.socket.emit('claim-media-source');
+    await selectMediaSourceDevice(state.socketId);
 }
 
 function updateLocalMediaUI(){
@@ -1530,8 +1553,10 @@ function createPeerConnection(targetId,initiator=false){
         if(!stream.getTracks().some(t=>t.id===e.track.id)) stream.addTrack(e.track);
         state.remoteStreams[targetId]=stream;
         e.track.onunmute=()=>attachRemoteVideo(targetId,stream);
+        e.track.onmute=()=>setTimeout(()=>attachRemoteVideo(targetId,stream),120);
         e.track.onended=()=>attachRemoteVideo(targetId,stream);
         attachRemoteVideo(targetId,stream);
+        setTimeout(()=>attachRemoteVideo(targetId,stream),180);
     };
     const scheduleReconnect=(delay=1800)=>{
         clearTimeout(state.peerReconnectTimers[targetId]);
@@ -1664,7 +1689,11 @@ function streamForLogicalPlayer(ownerKey){
     // com o mesmo Nome de Jogador, a câmera/microfone do celular passam a representar
     // aquele jogador para toda a sala — inclusive no próprio computador.
     const videoTrack=preferredTrackForOwner(ownerKey,'video');
-    const audioTrack=ownerKey===state.ownerKey ? null : preferredTrackForOwner(ownerKey,'audio');
+    const selectedSourceId=state.mediaSources?.[ownerKey] || null;
+    const ownSourceIsRemote=ownerKey===state.ownerKey && selectedSourceId && selectedSourceId!==state.socketId;
+    // Só silenciamos o próprio microfone quando a fonte é ESTE aparelho. Se a fonte
+    // escolhida é o celular e esta tela é o computador, o áudio do celular deve chegar.
+    const audioTrack=(ownerKey===state.ownerKey && !ownSourceIsRemote) ? null : preferredTrackForOwner(ownerKey,'audio');
     const desired=[videoTrack,audioTrack].filter(Boolean), desiredIds=new Set(desired.map(t=>t.id));
     result.getTracks().forEach(t=>{ if(!desiredIds.has(t.id)) result.removeTrack(t); });
     desired.forEach(t=>{ if(!result.getTracks().some(x=>x.id===t.id)) result.addTrack(t); });
@@ -1679,8 +1708,10 @@ async function attachLogicalMedia(ownerKey){
     const placeholder=isNarrator?document.getElementById('narradorPlaceholder'):document.getElementById('placeholder-owner-'+key);
     const noCam=isNarrator?document.getElementById('narradorNoCam'):document.getElementById('nocam-owner-'+key);
     if(!video)return;
-    const stream=streamForLogicalPlayer(ownerKey), hasVideo=stream.getVideoTracks().some(t=>t.readyState==='live'&&!t.muted), hasAudio=stream.getAudioTracks().some(t=>t.readyState==='live'&&!t.muted);
-    video.srcObject=stream; video.muted = ownerKey===state.ownerKey;
+    const stream=streamForLogicalPlayer(ownerKey), hasVideo=stream.getVideoTracks().some(t=>t.readyState==='live'), hasAudio=stream.getAudioTracks().some(t=>t.readyState==='live');
+    const selectedSourceId=state.mediaSources?.[ownerKey] || null;
+    const sourceIsThisDevice=ownerKey===state.ownerKey && (!selectedSourceId || selectedSourceId===state.socketId);
+    video.srcObject=stream; video.muted = sourceIsThisDevice;
     video.style.display=hasVideo?'block':'none';
     if(placeholder)placeholder.style.display=hasVideo?'none':'block';
     if(noCam)noCam.style.display=hasVideo?'none':'block';
@@ -3047,6 +3078,50 @@ const V6_ATTRS=[
     ['social','Sociais',[['v6_attr_charisma','Carisma'],['v6_attr_manipulation','Manipulação'],['v6_attr_composure','Autocontrole']]],
     ['mental','Mentais',[['v6_attr_intelligence','Inteligência'],['v6_attr_wits','Raciocínio'],['v6_attr_resolve','Determinação']]]
 ];
+const V6_ATTR_PRIORITY_DEFAULTS={physical:7,social:5,mental:3};
+const V6_ATTR_PRIORITY_VALUES=[7,5,3];
+function v6AttrCategoryForField(field){
+    const found=V6_ATTRS.find(([, ,items])=>items.some(([f])=>f===field));
+    return found?.[0] || '';
+}
+function v6AttrLabel(category){ return V6_ATTRS.find(([c])=>c===category)?.[1] || category; }
+function v6AttrPriority(category){
+    const raw=Number(getVal('v6_attr_priority_'+category,V6_ATTR_PRIORITY_DEFAULTS[category]));
+    return V6_ATTR_PRIORITY_VALUES.includes(raw)?raw:V6_ATTR_PRIORITY_DEFAULTS[category];
+}
+function v6AttrSpentForCategory(category){
+    const items=V6_ATTRS.find(([c])=>c===category)?.[2] || [];
+    return items.reduce((n,[f])=>n+Math.max(0,v6CurrentValue(f,1)-1),0);
+}
+function v6AttrPrioritySelect(category){
+    const current=v6AttrPriority(category);
+    return `<select data-field="v6_attr_priority_${category}" data-v6-attr-priority="${category}" onchange="v6AttrPriorityChanged(this,'${category}')">${V6_ATTR_PRIORITY_VALUES.map(v=>`<option value="${v}" ${v===current?'selected':''}>${v} pontos</option>`).join('')}</select>`;
+}
+function v6StoreDraftValue(field,value){
+    const key=state.sheetKey||state.socketId||'local';
+    const existing=(state.sheets[key]?.system===state.system?state.sheets[key].data:{})||{};
+    state.sheets[key]={system:state.system,data:{...existing,[field]:String(value)}};
+}
+function v6AttrPriorityChanged(el,category){
+    const old=Number(el.dataset.prevPriority || v6AttrPriority(category));
+    const desired=Number(el.value);
+    const other=V6_ATTRS.map(([c])=>c).find(c=>c!==category && v6AttrPriority(c)===desired);
+    const otherOld=other ? v6AttrPriority(other) : null;
+    const thisSpent=v6AttrSpentForCategory(category), otherSpent=other?v6AttrSpentForCategory(other):0;
+    if(thisSpent>desired || (other && otherSpent>old)){
+        el.value=String(old);
+        showToast(`Não é possível trocar a prioridade: os pontos já distribuídos excedem o novo limite.`,'error');
+        return;
+    }
+    v6StoreDraftValue('v6_attr_priority_'+category,desired);
+    if(other){
+        v6StoreDraftValue('v6_attr_priority_'+other,old);
+        const otherEl=document.querySelector(`[data-v6-attr-priority="${other}"]`);
+        if(otherEl){ otherEl.value=String(old); otherEl.dataset.prevPriority=String(old); }
+    }
+    el.dataset.prevPriority=String(desired);
+    v6UpdateAutomation();
+}
 const V6_SKILLS=[['athletics','Atletismo'],['awareness','Percepção'],['craft','Ofícios'],['expression','Expressão'],['fighting','Luta'],['investigation','Investigação'],['knowledge','Conhecimento'],['medicine','Medicina'],['persuasion','Persuasão'],['sabotage','Sabotagem'],['shooting','Tiro'],['subterfuge','Subterfúgio'],['survival','Sobrevivência']];
 const V6_CLAN_DISCIPLINES={
     Brujah:['Celerity','Potence','Presence'], Gangrel:['Animalism','Celerity','Fortitude'],
@@ -3074,9 +3149,7 @@ function v6PointSelect(field,min,max,def=0){
 }
 function v6DraftField(el){
     if(!el?.dataset?.field)return;
-    const key=state.sheetKey||state.socketId||'local';
-    const existing=(state.sheets[key]?.system===state.system?state.sheets[key].data:{})||{};
-    state.sheets[key]={system:state.system,data:{...existing,[el.dataset.field]:el.type==='checkbox'?el.checked:el.value}};
+    v6StoreDraftValue(el.dataset.field,el.type==='checkbox'?el.checked:el.value);
 }
 function v6CurrentValue(field,def=0){
     const el=document.querySelector(`#sheetContent [data-field="${field}"]`);
@@ -3097,7 +3170,9 @@ function v6PointChanged(el){
     const stage=String(document.querySelector('[data-field="v6_estagio"]')?.value||getVal('v6_estagio','Neonate')), b=v6StageBudget(stage);
     let spent=0,total=null;
     const f=el.dataset.field||'';
-    if(f.startsWith('v6_attr_')){spent=v6AttrSpent();total=b.attr;}
+    if(f.startsWith('v6_attr_')){
+        const category=v6AttrCategoryForField(f); spent=v6AttrSpentForCategory(category); total=v6AttrPriority(category);
+    }
     else if(f.startsWith('v6_skill_')){spent=v6SkillSpent(); total=b.skillBase==null?null:b.skillBase+5*(b.lifepaths||0);}
     else if(f.startsWith('v6_disc_')){spent=v6DisciplineSpent();total=b.discipline;}
     else if(f.startsWith('v6_resource_')){spent=v6ResourceSpent();total=3+3*(b.lifepaths||0);}
@@ -3116,7 +3191,8 @@ function v6UpdateAutomation(){
     const stage=String(document.querySelector('[data-field="v6_estagio"]')?.value||getVal('v6_estagio','Neonate')), b=v6StageBudget(stage);
     const lp=b.lifepaths||1, skillTotal=b.skillBase==null?null:b.skillBase+5*lp, resourceTotal=3+3*lp;
     const set=(id,spent,total)=>{const el=document.getElementById(id);if(!el)return; const strong=el.querySelector('strong'); if(strong)strong.textContent=total==null?'conforme pacote do Alpha':`${spent}/${total}`; el.classList.toggle('over',total!=null&&spent>total);el.classList.toggle('ok',total!=null&&spent<=total);};
-    set('v6AttrBudget',v6AttrSpent(),b.attr); set('v6SkillBudget',v6SkillSpent(),skillTotal); set('v6DiscBudget',v6DisciplineSpent(),b.discipline); set('v6ResourceBudget',v6ResourceSpent(),resourceTotal);
+    V6_ATTRS.forEach(([category])=>set('v6AttrBudget_'+category,v6AttrSpentForCategory(category),v6AttrPriority(category)));
+    set('v6SkillBudget',v6SkillSpent(),skillTotal); set('v6DiscBudget',v6DisciplineSpent(),b.discipline); set('v6ResourceBudget',v6ResourceSpent(),resourceTotal);
     set('v6TraitBudget',v6CurrentValue('v6_clan_traits_count',0),b.traits); set('v6MeritBudget',v6CurrentValue('v6_merits_count',0),b.merits); set('v6PowerBudget',v6CurrentValue('v6_powers_count',0),b.powers);
     const stamina=v6CurrentValue('v6_attr_stamina',1), composure=v6CurrentValue('v6_attr_composure',1), resolve=v6CurrentValue('v6_attr_resolve',1);
     const vitae=10+stamina, will=5+composure+resolve;
@@ -3165,7 +3241,7 @@ function renderVampiroV6Sheet(){
         ${[1,2,3,4].map(i=>`<div data-v6-lifepath-slot="${i}" style="display:${i<=lp?'block':'none'};margin-top:7px"><div class="info-field"><label>Lifepath ${i}</label><input type="text" data-field="v6_lifepath_${i}" value="${escapeHtml(getVal('v6_lifepath_'+i,i===1?getVal('v6_lifepath',''):''))}" placeholder="Nome / carreira / caminho" oninput="v6DraftField(this)"></div></div>`).join('')}</div>
         <div class="sheet-group"><div class="sheet-group-title">⭐ Clan Traits & Merits</div>${v6BudgetBox('v6TraitBudget','Clan Traits iniciais',getNum('v6_clan_traits_count',0),b.traits)}${v6BudgetBox('v6MeritBudget','Merits iniciais',getNum('v6_merits_count',0),b.merits)}<div class="info-grid"><div class="info-field"><label>Clan Traits usados</label><input type="number" min="0" max="10" data-field="v6_clan_traits_count" value="${getNum('v6_clan_traits_count',0)}" oninput="v6LimitedCountChanged(this,'traits')"></div><div class="info-field"><label>Merits usados</label><input type="number" min="0" max="10" data-field="v6_merits_count" value="${getNum('v6_merits_count',0)}" oninput="v6LimitedCountChanged(this,'merits')"></div></div><textarea class="sheet-textarea" data-field="v6_clan_traits" placeholder="Clan Traits escolhidos" oninput="v6DraftField(this)">${escapeHtml(getVal('v6_clan_traits',getVal('v6_clan_trait','')))}</textarea><textarea class="sheet-textarea" data-field="v6_merits" placeholder="Merits escolhidos" style="margin-top:6px" oninput="v6DraftField(this)">${escapeHtml(getVal('v6_merits',''))}</textarea></div>`;
     } else if(state.sheetTab==='atributos'){
-        html+=`<div class="sheet-group"><div class="sheet-group-title">💪 Atributos</div>${v6BudgetBox('v6AttrBudget','Pontos adicionais de Atributos',v6AttrSpent(),b.attr,b.attr===15?'modelo 7 / 5 / 3 no Neonate':'')}<div class="v6-point-grid">${V6_ATTRS.map(([,label,items])=>`<div class="v6-point-card"><h4>${label}</h4>${items.map(([f,l])=>`<div class="v6-dot-input"><span>${l}</span>${v6PointSelect(f,1,5,1)}</div>`).join('')}</div>`).join('')}</div><div class="v6-alpha-note" style="margin-top:8px">Cada Atributo começa com 1. O contador considera apenas os pontos adicionados acima desse valor. Para Neonate, o Alpha usa 15 pontos distribuídos no modelo 7/5/3.</div></div>
+        html+=`<div class="sheet-group"><div class="sheet-group-title">💪 Atributos — prioridades 7 / 5 / 3</div><div class="v6-alpha-note">Cada grupo — <b>Físicos, Sociais e Mentais</b> — deve receber uma prioridade diferente: <b>7, 5 ou 3 pontos</b>. Escolha a prioridade de cada grupo; ao escolher um valor já usado, os dois grupos trocam de prioridade automaticamente. Cada Atributo começa com 1 e o limite conta somente os pontos adicionados.</div><div class="v6-point-grid" style="margin-top:8px">${V6_ATTRS.map(([category,label,items])=>`<div class="v6-point-card"><h4>${label}</h4><div class="info-field" style="margin-bottom:7px"><label>Prioridade deste grupo</label>${v6AttrPrioritySelect(category)}</div>${v6BudgetBox('v6AttrBudget_'+category,'Pontos usados',v6AttrSpentForCategory(category),v6AttrPriority(category))}${items.map(([f,l])=>`<div class="v6-dot-input"><span>${l}</span>${v6PointSelect(f,1,5,1)}</div>`).join('')}</div>`).join('')}</div></div>
         <div class="sheet-group"><div class="sheet-group-title">🎭 Identidade</div><div class="info-grid"><div class="info-field"><label>Jogador</label><input type="text" data-field="jogador" value="${escapeHtml(getVal('jogador',state.name||''))}" oninput="v6DraftField(this)"></div><div class="info-field"><label>Ambição</label><input type="text" data-field="ambicao" value="${escapeHtml(getVal('ambicao',''))}" oninput="v6DraftField(this)"></div><div class="info-field"><label>Desejo</label><input type="text" data-field="desejo" value="${escapeHtml(getVal('desejo',''))}" oninput="v6DraftField(this)"></div></div></div>`;
     } else if(state.sheetTab==='habilidades'){
         const skillTotal=b.skillBase==null?null:b.skillBase+5*lp;

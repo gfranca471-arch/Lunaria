@@ -1,7 +1,7 @@
 {
   "name": "mesa-rpg-online",
-  "version": "2.0.0",
-  "description": "Mesa virtual de RPG V20 com campanhas independentes por sistema, V6 Alpha guiado, WebRTC multidispositivo e dados 3D sincronizados",
+  "version": "2.0.1",
+  "description": "Mesa RPG Online V20.1 com V6 7/5/3 e mídia multidispositivo corrigida",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

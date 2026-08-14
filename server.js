@@ -842,17 +842,32 @@ io.on('connection', (socket) => {
         schedulePersistRoom(code);
         io.to(code).emit('char-image-changed', { ownerKey:key, url:data.url });
     });
+    function selectMediaSourceForOwner(ownerKey, targetSocketId, automatic=false) {
+        const code = socket.data.roomCode;
+        const room = rooms[code];
+        if (!room || !ownerKey || !targetSocketId) return false;
+        const target = room.players[targetSocketId];
+        if (!target || target.ownerKey !== ownerKey) return false;
+        room.mediaSources ||= {};
+        room.mediaSources[ownerKey] = targetSocketId;
+        io.to(code).emit('media-source-selected', {
+            ownerKey, socketId:targetSocketId, name:target.name || socket.data.playerName,
+            automatic, deviceCount:roomOwnerEndpoints(room, ownerKey).length
+        });
+        return true;
+    }
     socket.on('claim-media-source', () => {
         const code = socket.data.roomCode;
         const room = rooms[code];
         if (!room || !room.players[socket.id]) return;
-        const ownerKey = socket.data.ownerKey;
-        room.mediaSources ||= {};
-        room.mediaSources[ownerKey] = socket.id;
-        io.to(code).emit('media-source-selected', {
-            ownerKey, socketId:socket.id, name:socket.data.playerName,
-            automatic:false, deviceCount:roomOwnerEndpoints(room, ownerKey).length
-        });
+        selectMediaSourceForOwner(socket.data.ownerKey, socket.id, false);
+    });
+    socket.on('select-media-source', (data) => {
+        const code = socket.data.roomCode;
+        const room = rooms[code];
+        if (!room || !room.players[socket.id]) return;
+        // O usuário só pode escolher entre endpoints pertencentes ao mesmo jogador.
+        selectMediaSourceForOwner(socket.data.ownerKey, String(data?.socketId || ''), false);
     });
 
     socket.on('media-state', (data) => {

@@ -1,8 +1,8 @@
-# Mesa RPG Online — V20
+# Mesa RPG Online — V20.1
 
 Atualização focada em campanhas independentes por sistema, mídia multidispositivo, ficha Vampiro V6 Alpha ampliada e som dos dados.
 
-## Mudanças da V20
+## Mudanças da V20.1
 
 - A identidade da campanha agora é **Sistema + Nome da Campanha**. O mesmo nome e até a mesma senha podem existir em Lobisomem, Vampiro V5, Vampiro V6, D&D e Changeling sem colisão.
 - Narrador **e jogador** escolhem o sistema ao entrar; a senha continua obrigatória.
@@ -146,3 +146,9 @@ Os arquivos `index.html`, `mesa.html`, `server.js` e `package.json` precisam est
 - Quando SMTP não existe, o servidor usa FormSubmit como relay para `V6_APPROVAL_EMAIL`. No primeiro uso, confirme a ativação recebida nesse e-mail e use o botão **Reenviar pedido** na tela de espera.
 - SMTP continua suportado opcionalmente se as variáveis forem definidas manualmente.
 - A ficha de Lobisomem foi revertida para a linha clássica da 3ª Edição/Revisada: as tribos clássicas da 3ª Edição/Revisada em português, incluindo Fianna e Portadores da Luz Interior, e campos Natureza, Comportamento e Seita no lugar dos campos de Patrono/Favor/Ban de W5.
+
+
+## V20.1
+- Vampiro V6: prioridades de Atributos 7/5/3 por Físicos, Sociais e Mentais.
+- Dois aparelhos do mesmo jogador: áudio/vídeo do aparelho remoto selecionado agora podem ser reproduzidos no computador.
+- Seleção explícita entre os aparelhos do mesmo jogador na aba Sala.
