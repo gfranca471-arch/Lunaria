@@ -1,7 +1,7 @@
 {
   "name": "mesa-rpg-online",
-  "version": "2.1.2",
-  "description": "Mesa RPG Online V21.2 com câmeras maiores e alça superior de reposicionamento",
+  "version": "2.1.4",
+  "description": "Mesa RPG Online V21.4 com câmeras individuais verticais 15% menores",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

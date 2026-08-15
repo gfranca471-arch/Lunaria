@@ -225,3 +225,11 @@ A autorização continua vinculada à campanha e ocorre apenas na primeira cria�
 - A posição livre é preservada durante a sessão mesmo quando o layout de vídeo é re-renderizado.
 - Duplo clique na alça devolve somente aquele card à posição inicial.
 - O antigo arrasto da faixa inteira de câmeras foi desativado.
+
+
+## V21.4 — câmeras 15% menores
+
+- Redução de aproximadamente 15% em cada janela individual de vídeo, preservando a proporção vertical.
+- Desktop: 128×179 px.
+- Celular: 112×153 px.
+- Mantidos: ordem 001/002/003, alça individual `•••`, arrasto livre e duplo clique para voltar à posição inicial.
