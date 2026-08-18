@@ -260,3 +260,13 @@ A autorização continua vinculada à campanha e ocorre apenas na primeira cria�
 - Vampiro V5 ganhou **Re-rolar falhas (sem Fome)**: preserva sucessos e todos os dados de Fome e rola novamente apenas D10 comuns que ficaram abaixo da dificuldade da rolagem anterior. O resultado novo é decidido no servidor e enviado igual para todos.
 - A seleção de cor do nome foi removida da tela de entrada. Perfis antigos mantêm a cor salva; novos perfis recebem a cor automaticamente pelo servidor.
 - Efeitos visuais continuam limitados a ~30 FPS e câmera/áudio permanecem no WebRTC; o upload de cenário não trafega mais como base64 pelo socket, evitando competir com eventos em tempo real.
+
+
+## V21.8 — interface, efeitos e sincronização
+- Editor do token fixo no canto superior esquerdo e visível somente com token editável selecionado.
+- Áreas dos efeitos do mapa voltaram ao recorte retangular.
+- Teias redesenhadas como teias de aranha; água com correnteza tipo rio; relâmpagos como tempestade mágica com múltiplas descargas.
+- V5: cada jogada original permite somente uma re-rolagem de falhas comuns; sucessos e dados de Fome continuam preservados.
+- Controle de volume dos efeitos restaurado abaixo das faixas. Música e efeitos iniciam em 40%.
+- Ciclo dia/noite preserva 00:00 corretamente no cliente, servidor e após recarregar a sala.
+- WebRTC de câmera/áudio e sincronização compartilhada permanecem no mesmo fluxo da V21.7.

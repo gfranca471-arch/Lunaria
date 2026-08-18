@@ -192,7 +192,7 @@ function normalizeSceneState(scene) {
         dynamicLighting: { enabled:Boolean(scene.dynamicLighting?.enabled), visionSquares:Math.max(2,Math.min(40,Number(scene.dynamicLighting?.visionSquares)||8)) },
         dayNight: {
             enabled: Boolean(dayNight.enabled),
-            minutes: Math.max(0, Math.min(1439, Math.round(Number(dayNight.minutes) || 720))),
+            minutes: (() => { const n=Number(dayNight.minutes); return Math.max(0, Math.min(1439, Math.round(Number.isFinite(n) ? n : 720))); })(),
             daySfxId: String(dayNight.daySfxId || '').slice(0,120),
             nightSfxId: String(dayNight.nightSfxId || '').slice(0,120)
         }
@@ -1002,6 +1002,8 @@ io.on('connection', (socket) => {
         const rollId=String(data?.rollId||'');
         const source=[...(room.rollHistory||[])].reverse().find(r=>String(r.rollId)===rollId);
         if(!source || source.mode!=='v5') return socket.emit('dice-reroll-error','A rolagem V5 anterior não foi encontrada.');
+        if(source.rerollOf) return socket.emit('dice-reroll-error','Esta jogada já é uma re-rolagem. Cada jogada original permite apenas 1 re-rolagem.');
+        if(source.rerollUsed || (room.rollHistory||[]).some(r=>String(r.rerollOf||'')===String(source.rollId))) return socket.emit('dice-reroll-error','Esta jogada já usou a única re-rolagem permitida.');
         const sameOwner=source.rollerOwnerKey ? source.rollerOwnerKey===socket.data.ownerKey : source.rollerId===socket.id;
         if(!sameOwner) return socket.emit('dice-reroll-error','Somente quem fez a rolagem pode re-rolar as próprias falhas.');
         const difficulty=Math.max(1,Math.min(10,Number(source.difficulty)||6));
@@ -1015,6 +1017,7 @@ io.on('connection', (socket) => {
             return {...r,kept:true};
         });
         if(!rerolledIndices.length) return socket.emit('dice-reroll-error','Não há falhas comuns para re-rolar. Dados de Fome nunca entram neste reroll.');
+        source.rerollUsed=true; source.rerollUsedAt=Date.now();
         const roll={
             ...source,
             rollId:crypto.randomUUID?crypto.randomUUID():crypto.randomBytes(16).toString('hex'),
