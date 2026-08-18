@@ -4,11 +4,15 @@ const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const dns = require('dns');
+const net = require('net');
 
 let Pool = null;
 try { ({ Pool } = require('pg')); } catch (_) {}
 let nodemailer = null;
 try { nodemailer = require('nodemailer'); } catch (_) {}
+let sharp = null;
+try { sharp = require('sharp'); } catch (err) { console.warn('⚠️ sharp indisponível; conversão avançada de imagens desativada:', err?.message || err); }
 const { Server } = require('socket.io');
 
 const app = express();
@@ -19,17 +23,8 @@ const io = new Server(server, {
     // Base64 aumenta o tamanho dos arquivos. 16 MB cobre músicas de até 5 MB
     // e imagens de cenário/tokens sem derrubar a conexão.
     maxHttpBufferSize: 16 * 1024 * 1024,
-    // Heartbeat mais tolerante a celulares, Wi‑Fi instável e pequenas pausas
-    // do event loop durante persistência/renderização. Evita falso ping timeout.
-    pingInterval: 25000,
-    pingTimeout: 60000,
-    perMessageDeflate: false,
-    // Mantém id, rooms e socket.data durante quedas curtas. Socket.IO 4.7+
-    // recupera também pacotes perdidos quando a reconexão ocorre dentro da janela.
-    connectionStateRecovery: {
-        maxDisconnectionDuration: 20000,
-        skipMiddlewares: true
-    }
+    pingInterval: 10000,
+    pingTimeout: 20000
 });
 
 const PUBLIC_DIR = path.resolve(__dirname);
@@ -65,12 +60,7 @@ let pgPool = null;
 let storageMode = 'json';
 let disablePostgres = false;
 let jsonSaveTimer = null;
-let jsonSaveInFlight = false;
-let jsonSavePending = false;
 const roomPersistTimers = new Map();
-const roomPersistInFlight = new Set();
-const roomPersistQueued = new Set();
-const disconnectCleanupTimers = new Map();
 const v6ApprovalRequests = new Map();
 const V6_APPROVAL_EMAIL = process.env.V6_APPROVAL_EMAIL || 'v.f.lune@gmail.com';
 const V6_APPROVAL_TTL_MS = 30 * 60 * 1000;
@@ -84,14 +74,6 @@ function rtcConfig() {
         { urls: 'stun:stun1.l.google.com:19302' }
     ];
     try {
-        // Aceita tanto configuração simples (TURN_URL/USER/CREDENTIAL) quanto um
-        // array JSON completo fornecido por serviços de TURN. Isso facilita usar
-        // UDP + TCP + TLS sem alterar o código da mesa.
-        const json=String(process.env.TURN_ICE_SERVERS_JSON||'').trim();
-        if(json){
-            const parsed=JSON.parse(json);
-            if(Array.isArray(parsed)) for(const item of parsed){ if(item&&item.urls)iceServers.push(item); }
-        }
         const rawTurn = String(process.env.TURN_URL || '').trim();
         if (rawTurn) {
             const urls = rawTurn.split(',').map(v => v.trim()).filter(Boolean);
@@ -109,13 +91,10 @@ function rtcConfig() {
     }
     return {
         iceServers,
-        iceCandidatePoolSize: 10,
+        iceCandidatePoolSize: 8,
         bundlePolicy: 'max-bundle',
         rtcpMuxPolicy: 'require'
     };
-}
-function hasTurnConfigured(){
-    try{return rtcConfig().iceServers.some(s=>{const u=Array.isArray(s.urls)?s.urls:[s.urls];return u.some(x=>/^turns?:/i.test(String(x||'')));});}catch(_){return false;}
 }
 
 
@@ -152,6 +131,10 @@ const CHAT_COLORS = [
     '#4facfe','#00d9a5','#ffd166','#c792ea','#ff9f43','#67e8f9',
     '#a8e6cf','#d4a5ff','#7ee787','#f0a6ca','#8ab4f8','#f7c873'
 ];
+function normalizeHexColor(value, fallback='') {
+    const v=String(value||'').trim();
+    return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : fallback;
+}
 function randomChatColor(room) {
     const used=new Set(Object.values(room?.profiles||{}).map(p=>String(p?.chatColor||'').toLowerCase()).filter(Boolean));
     const available=CHAT_COLORS.filter(c=>!used.has(c.toLowerCase()));
@@ -179,22 +162,12 @@ function normalizeGridConfig(cfg) {
         const n = Math.round(Number(v));
         return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
     };
-    const clampFloat = (v, min, max) => {
-        const n = Number(v);
-        return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : null;
-    };
     return {
         enabled: Boolean(cfg.enabled),
         size: clamp(cfg.size, 16, 180, 50),
         offsetX: clamp(cfg.offsetX, -500, 500, 0),
         offsetY: clamp(cfg.offsetY, -500, 500, 0),
-        snap: Boolean(cfg.snap),
-        // V21.8: a grade é salva proporcionalmente ao mapa, não à tela do aparelho.
-        // Isso mantém tokens e quadrados na mesma posição em celular e computador.
-        sizePct: clampFloat(cfg.sizePct, .15, 50),
-        offsetXPct: clampFloat(cfg.offsetXPct, -100, 100),
-        offsetYPct: clampFloat(cfg.offsetYPct, -100, 100),
-        coordVersion: Number(cfg.coordVersion) >= 2 ? 2 : 1
+        snap: Boolean(cfg.snap)
     };
 }
 
@@ -255,6 +228,7 @@ function normalizeRoom(room, code) {
     room.roomName = room.roomName || code;
     room.roomNameKey = room.roomNameKey || keyForLabel(room.roomName);
     room.currentImage = room.currentImage || null;
+    room.currentImageAsset = room.currentImageAsset && typeof room.currentImageAsset === 'object' ? room.currentImageAsset : null;
     room.gridConfig = normalizeGridConfig(room.gridConfig);
     room.tokens = Array.isArray(room.tokens) ? room.tokens : [];
     room.sceneState = normalizeSceneState(room.sceneState);
@@ -271,6 +245,9 @@ function normalizeRoom(room, code) {
     // permanece estável mesmo quando o jogador fecha a mesa ou troca de aparelho.
     room.cameraOrder = Array.isArray(room.cameraOrder)
         ? [...new Set(room.cameraOrder.map(String).filter(Boolean))]
+        : [];
+    room.cameraNumberHidden = Array.isArray(room.cameraNumberHidden)
+        ? [...new Set(room.cameraNumberHidden.map(String).filter(Boolean))]
         : [];
     room.createdAt = room.createdAt || Date.now();
     room.updatedAt = room.updatedAt || Date.now();
@@ -326,70 +303,44 @@ async function loadRoom(code) {
     }
     return null;
 }
-async function writeJsonSnapshot() {
-    if (jsonSaveInFlight) { jsonSavePending = true; return; }
-    jsonSaveInFlight = true;
-    try {
-        do {
-            jsonSavePending = false;
-            const output = {};
-            for (const [code, room] of Object.entries(rooms)) output[code] = persistableRoom(room);
-            await fs.promises.mkdir(path.dirname(DATA_FILE), { recursive: true });
-            const temp = DATA_FILE + '.tmp';
-            // Compacto e assíncrono: não bloqueia heartbeat, áudio ou sinalização WebRTC.
-            await fs.promises.writeFile(temp, JSON.stringify(output));
-            await fs.promises.rename(temp, DATA_FILE);
-        } while (jsonSavePending);
-    } catch (err) {
-        console.error('Erro ao persistir salas:', err);
-    } finally {
-        jsonSaveInFlight = false;
-    }
-}
-function scheduleJsonSave(delay = storageMode === 'postgres' ? 6000 : 1800) {
-    // O backup continua separado do código, porém deixa de serializar/gravar todas
-    // as campanhas a cada pequeno movimento de token/efeito.
+function scheduleJsonSave() {
+    // Espelho JSON separado do código. Quando ROOMS_DATA_FILE aponta para um
+    // disco persistente do Render, este arquivo sobrevive aos deploys. Mesmo com
+    // PostgreSQL ativo mantemos este backup legível por humanos.
     clearTimeout(jsonSaveTimer);
     jsonSaveTimer = setTimeout(() => {
-        jsonSaveTimer = null;
-        void writeJsonSnapshot();
-    }, delay);
+        try {
+            const output = {};
+            for (const [code, room] of Object.entries(rooms)) output[code] = persistableRoom(room);
+            fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+            const temp = DATA_FILE + '.tmp';
+            fs.writeFileSync(temp, JSON.stringify(output, null, 2));
+            fs.renameSync(temp, DATA_FILE);
+        } catch (err) { console.error('Erro ao persistir salas:', err); }
+    }, 120);
 }
 async function persistRoom(code) {
-    if (roomPersistInFlight.has(code)) {
-        roomPersistQueued.add(code);
-        return;
+    const room = rooms[code];
+    if (!room) return;
+    room.updatedAt = Date.now();
+    if (storageMode === 'postgres' && pgPool) {
+        try {
+            await pgPool.query(
+                `INSERT INTO rpg_rooms(room_code, room_data, updated_at)
+                 VALUES($1, $2::jsonb, NOW())
+                 ON CONFLICT(room_code) DO UPDATE SET room_data=EXCLUDED.room_data, updated_at=NOW()`,
+                [code, JSON.stringify(persistableRoom(room))]
+            );
+        } catch (err) { console.error(`Erro ao persistir ${code} no Postgres:`, err); }
     }
-    roomPersistInFlight.add(code);
-    try {
-        do {
-            roomPersistQueued.delete(code);
-            const room = rooms[code];
-            if (!room) break;
-            room.updatedAt = Date.now();
-            if (storageMode === 'postgres' && pgPool) {
-                try {
-                    const payload = JSON.stringify(persistableRoom(room));
-                    await pgPool.query(
-                        `INSERT INTO rpg_rooms(room_code, room_data, updated_at)
-                         VALUES($1, $2::jsonb, NOW())
-                         ON CONFLICT(room_code) DO UPDATE SET room_data=EXCLUDED.room_data, updated_at=NOW()`,
-                        [code, payload]
-                    );
-                } catch (err) { console.error(`Erro ao persistir ${code} no Postgres:`, err); }
-            }
-            scheduleJsonSave();
-        } while (roomPersistQueued.has(code));
-    } finally {
-        roomPersistInFlight.delete(code);
-    }
+    scheduleJsonSave();
 }
-function schedulePersistRoom(code, delay=700) {
+function schedulePersistRoom(code, delay=180) {
     clearTimeout(roomPersistTimers.get(code));
     roomPersistTimers.set(code, setTimeout(() => {
         roomPersistTimers.delete(code);
-        void persistRoom(code);
-    }, Math.max(300, Number(delay) || 700)));
+        persistRoom(code);
+    }, delay));
 }
 
 async function roomNameConflict(campaignKey, roomNameKey, exceptCode='') {
@@ -658,13 +609,132 @@ app.post('/api/v6-resend-approval', async (req,res) => {
     }
 });
 
+
+// ─────────────────────────────────────────────────────────────
+// CENÁRIO / IMAGENS
+// Uploads passam por HTTP e são normalizados para WebP no servidor. O Socket.IO
+// recebe apenas a URL final, evitando transportar vários MB junto da chamada,
+// dos dados e dos efeitos em tempo real.
+// ─────────────────────────────────────────────────────────────
+const SCENE_IMAGE_INPUT_LIMIT = 20 * 1024 * 1024;
+const SCENE_IMAGE_OUTPUT_LIMIT = 14 * 1024 * 1024;
+
+function isPrivateIp(address) {
+    const ip=String(address||'').toLowerCase();
+    if(net.isIP(ip)===4){
+        const p=ip.split('.').map(Number);
+        return p[0]===10 || p[0]===127 || p[0]===0 || (p[0]===169&&p[1]===254) || (p[0]===172&&p[1]>=16&&p[1]<=31) || (p[0]===192&&p[1]===168) || (p[0]===100&&p[1]>=64&&p[1]<=127) || (p[0]===198&&(p[1]===18||p[1]===19));
+    }
+    if(net.isIP(ip)===6){
+        if(ip==='::1'||ip==='::') return true;
+        if(ip.startsWith('fc')||ip.startsWith('fd')||ip.startsWith('fe8')||ip.startsWith('fe9')||ip.startsWith('fea')||ip.startsWith('feb')) return true;
+        const mapped=ip.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/); if(mapped) return isPrivateIp(mapped[1]);
+    }
+    return false;
+}
+async function publicAddressForHost(hostname){
+    const all=await dns.promises.lookup(hostname,{all:true,verbatim:true});
+    const good=all.find(x=>!isPrivateIp(x.address));
+    if(!good || all.some(x=>isPrivateIp(x.address))) throw new Error('Endereço privado/local não é permitido.');
+    return good;
+}
+function downloadRemoteImage(urlString, redirects=0){
+    return new Promise(async (resolve,reject)=>{
+        try{
+            if(redirects>4) throw new Error('Redirecionamentos demais ao abrir a imagem.');
+            const u=new URL(String(urlString||''));
+            if(!['http:','https:'].includes(u.protocol)) throw new Error('Use um link http:// ou https://.');
+            const resolved=await publicAddressForHost(u.hostname);
+            const lib=u.protocol==='https:'?https:require('http');
+            const req=lib.request({
+                protocol:u.protocol, hostname:u.hostname, port:u.port || (u.protocol==='https:'?443:80),
+                path:u.pathname+u.search, method:'GET',
+                headers:{'User-Agent':'Mesa-RPG-Online/2.1.7','Accept':'image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=.9,*/*;q=.2'},
+                lookup:(_host,_opts,cb)=>cb(null,resolved.address,resolved.family), timeout:15000
+            },res=>{
+                if(res.statusCode>=300&&res.statusCode<400&&res.headers.location){
+                    res.resume(); const next=new URL(res.headers.location,u).toString();
+                    downloadRemoteImage(next,redirects+1).then(resolve,reject); return;
+                }
+                if(res.statusCode<200||res.statusCode>=300){res.resume();return reject(new Error(`O link respondeu HTTP ${res.statusCode}.`));}
+                const len=Number(res.headers['content-length']||0); if(len>SCENE_IMAGE_INPUT_LIMIT){res.destroy();return reject(new Error('Imagem do link excede 20 MB.'));}
+                const chunks=[];let total=0;
+                res.on('data',chunk=>{total+=chunk.length;if(total>SCENE_IMAGE_INPUT_LIMIT){req.destroy(new Error('Imagem do link excede 20 MB.'));return;}chunks.push(chunk);});
+                res.on('end',()=>resolve({buffer:Buffer.concat(chunks),contentType:String(res.headers['content-type']||'').split(';')[0]}));
+            });
+            req.on('timeout',()=>req.destroy(new Error('Tempo limite ao abrir o link da imagem.'))); req.on('error',reject); req.end();
+        }catch(err){reject(err);}
+    });
+}
+async function normalizeSceneImageBuffer(buffer, sourceName='imagem'){
+    if(!Buffer.isBuffer(buffer)||!buffer.length) throw new Error('Arquivo de imagem vazio.');
+    if(buffer.length>SCENE_IMAGE_INPUT_LIMIT) throw new Error('Imagem muito grande (máx. 20 MB).');
+    if(!sharp) throw new Error('Conversor de imagens indisponível no servidor. Execute npm install após atualizar o projeto.');
+    try{
+        const base=sharp(buffer,{limitInputPixels:120000000,animated:false,failOn:'error'});
+        const meta=await base.metadata();
+        if(!meta.width||!meta.height) throw new Error('Formato de imagem não reconhecido.');
+        const result=await base.rotate().resize({width:6144,height:6144,fit:'inside',withoutEnlargement:true}).webp({quality:90,effort:4,smartSubsample:true}).toBuffer({resolveWithObject:true});
+        if(result.data.length>SCENE_IMAGE_OUTPUT_LIMIT) throw new Error('A imagem convertida ficou grande demais para a mesa.');
+        return {buffer:result.data,mime:'image/webp',width:result.info.width||meta.width,height:result.info.height||meta.height,originalFormat:meta.format||'',sourceName:cleanLabel(sourceName,160)};
+    }catch(err){
+        const msg=String(err?.message||err||'');
+        throw new Error(/unsupported image format|Input buffer contains unsupported image format/i.test(msg)?'Este formato de imagem não pôde ser convertido. Tente JPEG, PNG, WebP, AVIF, TIFF, GIF ou SVG.':msg);
+    }
+}
+function decodedHeader(value){try{return decodeURIComponent(String(value||''));}catch(_){return String(value||'');}}
+async function httpRoomAuth(req){
+    const code=cleanCode(req.headers['x-room-code'] || req.body?.room || req.query?.room || '');
+    const password=req.headers['x-room-password']!==undefined ? decodedHeader(req.headers['x-room-password']) : String(req.body?.password || '');
+    const room=await loadRoom(code);
+    if(!room || !passwordMatches(room,password)) return null;
+    return room;
+}
+async function storeSceneImage(room, normalized, by='Jogador'){
+    const id=crypto.randomBytes(18).toString('hex');
+    room.currentImageAsset={id,mime:normalized.mime,data:normalized.buffer.toString('base64'),name:normalized.sourceName||'imagem',width:normalized.width,height:normalized.height,originalFormat:normalized.originalFormat||'',updatedAt:Date.now()};
+    room.currentImage=`/api/room-image/${encodeURIComponent(room.code)}/${id}`;
+    room.sceneState=normalizeSceneState(room.sceneState); room.sceneState.layers.map=true;
+    await persistRoom(room.code);
+    io.to(room.code).emit('image-changed',{url:room.currentImage,by});
+    io.to(room.code).emit('scene-command',{command:'layers-set',payload:{layers:{map:true}},by,ownerKey:''});
+    return room.currentImage;
+}
+app.get('/api/room-image/:room/:assetId',async(req,res)=>{
+    try{
+        const room=await loadRoom(cleanCode(req.params.room)); const asset=room?.currentImageAsset;
+        if(!asset || String(asset.id)!==String(req.params.assetId)) return res.status(404).end();
+        const data=Buffer.from(String(asset.data||''),'base64'); if(!data.length) return res.status(404).end();
+        res.setHeader('Content-Type',asset.mime||'image/webp'); res.setHeader('X-Content-Type-Options','nosniff'); res.setHeader('Cache-Control','public, max-age=31536000, immutable');
+        res.setHeader('Content-Length',data.length); res.end(data);
+    }catch(_){res.status(404).end();}
+});
+app.post('/api/room-image/upload',express.raw({type:()=>true,limit:'20mb'}),async(req,res)=>{
+    try{
+        const room=await httpRoomAuth(req); if(!room) return res.status(403).json({ok:false,message:'Sala ou senha inválida.'});
+        let filename='imagem'; try{filename=decodeURIComponent(String(req.headers['x-file-name']||'imagem'));}catch(_){}
+        const normalized=await normalizeSceneImageBuffer(req.body,filename);
+        const url=await storeSceneImage(room,normalized,cleanName(decodedHeader(req.headers['x-player-name']||'Jogador')));
+        res.json({ok:true,url,width:normalized.width,height:normalized.height,format:'webp'});
+    }catch(err){console.warn('Upload de cenário:',err?.message||err);res.status(400).json({ok:false,message:err?.message||'Não foi possível abrir a imagem.'});}
+});
+app.post('/api/room-image/from-url',async(req,res)=>{
+    try{
+        const room=await httpRoomAuth(req); if(!room) return res.status(403).json({ok:false,message:'Sala ou senha inválida.'});
+        const source=String(req.body?.url||'').trim(); if(!source) return res.status(400).json({ok:false,message:'Informe o link da imagem.'});
+        const remote=await downloadRemoteImage(source); const normalized=await normalizeSceneImageBuffer(remote.buffer,new URL(source).pathname.split('/').pop()||'imagem-link');
+        const url=await storeSceneImage(room,normalized,cleanName(req.body?.playerName||'Jogador'));
+        res.json({ok:true,url,width:normalized.width,height:normalized.height,format:'webp'});
+    }catch(err){console.warn('Imagem por link:',err?.message||err);res.status(400).json({ok:false,message:err?.message||'Não foi possível abrir o link da imagem.'});}
+});
+
 app.get('/health', (req, res) => {
     res.status(200).json({
         ok: true,
         index: fs.existsSync(INDEX_FILE),
         mesa: fs.existsSync(TABLE_FILE),
         storage: storageMode,
-        turnConfigured: hasTurnConfigured(),
+        turnConfigured: Boolean(process.env.TURN_URL),
         v6ApprovalEmail: V6_APPROVAL_EMAIL,
         v6EmailConfigured: Boolean(process.env.SMTP_USER && process.env.SMTP_PASS),
         v6EmailFallback: 'formsubmit'
@@ -675,10 +745,10 @@ function isRoomMember(socket, roomCode) {
     return socket.data.roomCode === roomCode && rooms[roomCode] && rooms[roomCode].players[socket.id];
 }
 function roomOwnerEndpoints(room, ownerKey) {
-    return Object.values(room?.players || {}).filter(p => p.ownerKey === ownerKey && !p._disconnectedAt);
+    return Object.values(room?.players || {}).filter(p => p.ownerKey === ownerKey);
 }
 function logicalPlayerCount(room) {
-    return new Set(Object.values(room?.players || {}).filter(p=>!p._disconnectedAt).map(p => p.ownerKey || p.id)).size;
+    return new Set(Object.values(room?.players || {}).map(p => p.ownerKey || p.id)).size;
 }
 function updateOwnerEndpoints(room, ownerKey, patch) {
     for (const player of Object.values(room?.players || {})) {
@@ -696,17 +766,7 @@ function musicPayload(room) {
 }
 
 io.on('connection', (socket) => {
-    console.log('🔌 Cliente:', socket.id, socket.recovered ? '(sessão recuperada)' : '');
-    if (socket.recovered) {
-        const timer = disconnectCleanupTimers.get(socket.id);
-        if (timer) { clearTimeout(timer); disconnectCleanupTimers.delete(socket.id); }
-        const code = socket.data.roomCode;
-        const player = code && rooms[code]?.players?.[socket.id];
-        if (player) {
-            delete player._disconnectedAt;
-            socket.emit('connection-recovered', { room:code, serverTime:Date.now() });
-        }
-    }
+    console.log('🔌 Cliente:', socket.id);
     socket.on('join-room', async (data) => {
         try {
             const role = data.role === 'narrador' ? 'narrador' : 'jogador';
@@ -821,16 +881,6 @@ io.on('connection', (socket) => {
             // Dois aparelhos com o mesmo nome/senha usam a mesma ficha/perfil e contam
             // como UM jogador, embora cada aparelho mantenha seu socket WebRTC próprio.
             const ownerKey = ownerKeyFor(name);
-            // Se a recuperação de sessão não foi possível, uma nova conexão do mesmo
-            // jogador substitui silenciosamente endpoints que ficaram em carência.
-            for (const [oldId, oldPlayer] of Object.entries(room.players || {})) {
-                if (oldId === socket.id || oldPlayer.ownerKey !== ownerKey || !oldPlayer._disconnectedAt) continue;
-                const timer = disconnectCleanupTimers.get(oldId);
-                if (timer) { clearTimeout(timer); disconnectCleanupTimers.delete(oldId); }
-                delete room.players[oldId];
-                if (room.mediaSources?.[ownerKey] === oldId) delete room.mediaSources[ownerKey];
-                io.to(code).emit('user-left', { id:oldId, ownerKey, name:oldPlayer.name, ownerStillOnline:true, transient:true });
-            }
             const alreadyOnline = roomOwnerEndpoints(room, ownerKey);
             if (!alreadyOnline.length && logicalPlayerCount(room) >= 8) {
                 return socket.emit('room-error', 'Sala cheia (8 jogadores). Um segundo aparelho do mesmo jogador pode entrar normalmente.');
@@ -840,8 +890,8 @@ io.on('connection', (socket) => {
             const profile = {
                 name,
                 role: effectiveRole,
-                color: savedProfile.color || data.color || '#e94560',
-                chatColor: savedProfile.chatColor || randomChatColor(room),
+                color: normalizeHexColor(data.color, normalizeHexColor(savedProfile.color,'#e94560')),
+                chatColor: normalizeHexColor(data.chatColor, normalizeHexColor(savedProfile.chatColor, randomChatColor(room))),
                 charImage: savedProfile.charImage || data.charImage || '',
                 updatedAt: Date.now()
             };
@@ -881,6 +931,7 @@ io.on('connection', (socket) => {
                 logicalPlayerCount: logicalPlayerCount(room),
                 mediaSources: room.mediaSources,
                 cameraOrder: room.cameraOrder,
+                cameraNumberHidden: room.cameraNumberHidden,
                 gridConfig: room.gridConfig,
                 currentImage: room.currentImage,
                 tokens: room.tokens,
@@ -893,11 +944,11 @@ io.on('connection', (socket) => {
                 mySheet: room.sheets[ownerKey] || null,
                 rollHistory: room.rollHistory || [],
                 rtcConfig: rtcConfig(),
-                turnConfigured: hasTurnConfigured(),
                 storageMode
             });
             socket.to(code).emit('user-joined', { ...room.players[socket.id], samePlayer: alreadyOnline.length > 0 });
             io.to(code).emit('camera-order-changed', { cameraOrder: room.cameraOrder });
+            io.to(code).emit('camera-number-visibility-changed', { cameraNumberHidden: room.cameraNumberHidden });
             io.to(code).emit('media-source-selected', { ownerKey, socketId:room.mediaSources[ownerKey], name, automatic:true, deviceCount:alreadyOnline.length+1 });
             console.log(`👤 ${name} (${effectiveRole}) entrou em ${code}${alreadyOnline.length ? ' em outro aparelho' : ''}`);
         } catch (err) {
@@ -933,7 +984,7 @@ io.on('connection', (socket) => {
         }
         const roll = {
             rollId: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex'),
-            room: code, who: socket.data.playerName || 'Jogador', rollerId: socket.id,
+            room: code, who: socket.data.playerName || 'Jogador', rollerId: socket.id, rollerOwnerKey: socket.data.ownerKey,
             diceMode: isV5 ? 'v5' : String(diceType), diceType, mode, totalPool, hungerCount,
             difficulty, minSuccess, criticalCount, resultsDetailed, createdAt: Date.now()
         };
@@ -941,6 +992,37 @@ io.on('connection', (socket) => {
         if (room.rollHistory.length > 100) room.rollHistory = room.rollHistory.slice(-100);
         schedulePersistRoom(code, 250);
         io.to(code).emit('dice-roll-start', roll);
+    });
+
+    // V5: reroll seletivo das falhas comuns. Dados de Fome e sucessos ficam
+    // exatamente como estavam; somente os D10 normais abaixo da dificuldade rolam de novo.
+    socket.on('v5-reroll-failures-request', (data) => {
+        const code=cleanCode(data?.room); if(!isRoomMember(socket,code)) return;
+        const room=rooms[code]; if(room.system!=='vampiro') return socket.emit('dice-reroll-error','Reroll de falhas está disponível apenas no Vampiro V5.');
+        const rollId=String(data?.rollId||'');
+        const source=[...(room.rollHistory||[])].reverse().find(r=>String(r.rollId)===rollId);
+        if(!source || source.mode!=='v5') return socket.emit('dice-reroll-error','A rolagem V5 anterior não foi encontrada.');
+        const sameOwner=source.rollerOwnerKey ? source.rollerOwnerKey===socket.data.ownerKey : source.rollerId===socket.id;
+        if(!sameOwner) return socket.emit('dice-reroll-error','Somente quem fez a rolagem pode re-rolar as próprias falhas.');
+        const difficulty=Math.max(1,Math.min(10,Number(source.difficulty)||6));
+        const previous=Array.isArray(source.resultsDetailed)?source.resultsDetailed.map(r=>({value:Number(r.value)||1,hunger:Boolean(r.hunger)})):[];
+        const rerolledIndices=[]; const animationResultsDetailed=[];
+        const resultsDetailed=previous.map((r,index)=>{
+            if(!r.hunger && r.value<difficulty){
+                const value=randomDie(10); rerolledIndices.push(index); animationResultsDetailed.push({value,hunger:false,rerolled:true,rerollFrom:r.value,originalIndex:index});
+                return {value,hunger:false,rerolled:true,rerollFrom:r.value};
+            }
+            return {...r,kept:true};
+        });
+        if(!rerolledIndices.length) return socket.emit('dice-reroll-error','Não há falhas comuns para re-rolar. Dados de Fome nunca entram neste reroll.');
+        const roll={
+            ...source,
+            rollId:crypto.randomUUID?crypto.randomUUID():crypto.randomBytes(16).toString('hex'),
+            who:socket.data.playerName||source.who||'Jogador',rollerId:socket.id,rollerOwnerKey:socket.data.ownerKey,
+            resultsDetailed,animationResultsDetailed,rerolledIndices,rerollOf:source.rollId,createdAt:Date.now()
+        };
+        room.rollHistory.push(roll); if(room.rollHistory.length>100)room.rollHistory=room.rollHistory.slice(-100);
+        schedulePersistRoom(code,250); io.to(code).emit('dice-roll-start',roll);
     });
 
     // Compatibilidade com clientes antigos: só replica o resultado textual.
@@ -955,6 +1037,7 @@ io.on('connection', (socket) => {
         if (!isRoomMember(socket, code)) return;
         const room = rooms[code];
         room.currentImage = String(data.url || '').slice(0, 15 * 1024 * 1024) || null;
+        room.currentImageAsset = null;
         room.sceneState=normalizeSceneState(room.sceneState); room.sceneState.layers.map=true;
         io.to(code).emit('image-changed', { url: room.currentImage, by: socket.data.playerName });
         io.to(code).emit('scene-command',{command:'layers-set',payload:{layers:{map:true}},by:socket.data.playerName,ownerKey:socket.data.ownerKey});
@@ -1044,7 +1127,7 @@ io.on('connection', (socket) => {
     socket.on('token-added', async (data) => {
         const code = cleanCode(data.room); if (!isRoomMember(socket, code) || !data.token?.id) return;
         const room = rooms[code];
-        const token = { ...data.token, updatedAt: Date.now() };
+        const token = { ...data.token, ownerKey:socket.data.ownerKey, owner:socket.id, updatedAt: Date.now() };
         const existing = room.tokens.findIndex(t => t.id === token.id);
         if (existing >= 0) room.tokens[existing] = token; else room.tokens.push(token);
         io.to(code).emit('token-added', token);
@@ -1055,13 +1138,16 @@ io.on('connection', (socket) => {
         const room = rooms[code];
         const i = room.tokens.findIndex(t => t.id === data.token.id);
         if (i < 0) return;
-        room.tokens[i] = { ...room.tokens[i], ...data.token, updatedAt: Date.now() };
+        const existing=room.tokens[i],canEdit=socket.data.playerRole==='narrador'||!existing.ownerKey||existing.ownerKey===socket.data.ownerKey;
+        if(!canEdit)return;
+        room.tokens[i] = { ...existing, ...data.token, ownerKey:existing.ownerKey||socket.data.ownerKey, updatedAt: Date.now() };
         schedulePersistRoom(code, 220);
         socket.to(code).emit('token-moved', room.tokens[i]);
     });
     socket.on('token-removed', async (data) => {
         const code = cleanCode(data.room); if (!isRoomMember(socket, code)) return;
-        const room = rooms[code];
+        const room = rooms[code],token=room.tokens.find(t=>t.id===data.id);if(!token)return;
+        const canEdit=socket.data.playerRole==='narrador'||!token.ownerKey||token.ownerKey===socket.data.ownerKey;if(!canEdit)return;
         room.tokens = room.tokens.filter(t => t.id !== data.id);
         io.to(code).emit('token-removed', data.id);
         persistRoom(code);
@@ -1196,14 +1282,26 @@ io.on('connection', (socket) => {
         io.to(code).emit('camera-order-changed',{cameraOrder:room.cameraOrder,by:socket.data.playerName,ownerKey,position});
     });
 
+    socket.on('set-camera-number-visible', async (data) => {
+        const code=cleanCode(data.room);
+        if(!isRoomMember(socket,code) || socket.data.playerRole!=='narrador') return;
+        const room=rooms[code],ownerKey=String(data.ownerKey||'');
+        if(!ownerKey || !room.profiles?.[ownerKey] || room.profiles[ownerKey].role==='narrador') return;
+        const hidden=new Set(Array.isArray(room.cameraNumberHidden)?room.cameraNumberHidden:[]);
+        if(data.visible===false)hidden.add(ownerKey);else hidden.delete(ownerKey);
+        room.cameraNumberHidden=[...hidden];await persistRoom(code);
+        io.to(code).emit('camera-number-visibility-changed',{cameraNumberHidden:room.cameraNumberHidden,ownerKey,visible:!hidden.has(ownerKey),by:socket.data.playerName});
+    });
+
     socket.on('change-border', (data) => {
         const code = cleanCode(data.room); if (!isRoomMember(socket, code)) return;
         const key=socket.data.ownerKey;
         if(!key) return;
-        updateOwnerEndpoints(rooms[code], key, { color:data.color });
-        rooms[code].profiles[key] = { ...(rooms[code].profiles[key]||{}), name:socket.data.playerName, role:socket.data.playerRole, color:data.color, updatedAt:Date.now() };
+        const safeColor=normalizeHexColor(data.color,'#e94560');
+        updateOwnerEndpoints(rooms[code], key, { color:safeColor });
+        rooms[code].profiles[key] = { ...(rooms[code].profiles[key]||{}), name:socket.data.playerName, role:socket.data.playerRole, color:safeColor, updatedAt:Date.now() };
         schedulePersistRoom(code);
-        io.to(code).emit('border-changed', { ownerKey:key, color:data.color });
+        io.to(code).emit('border-changed', { ownerKey:key, color:safeColor });
     });
     socket.on('change-char-image', (data) => {
         const code = cleanCode(data.room); if (!isRoomMember(socket, code)) return;
@@ -1263,46 +1361,26 @@ io.on('connection', (socket) => {
     socket.on('webrtc-ice', data => relayRtc('webrtc-ice', { target:data.target, payload:{ candidate:data.candidate } }));
     socket.on('webrtc-reconnect-request', data => relayRtc('webrtc-reconnect-request', { target:data.target, payload:{} }));
 
-    function finalizeSocketDeparture(code, socketId) {
-        const room = rooms[code];
-        const leaving = room?.players?.[socketId];
-        if (!room || !leaving) return;
-        delete room.players[socketId];
-        disconnectCleanupTimers.delete(socketId);
-        const remaining = roomOwnerEndpoints(room, leaving.ownerKey);
-        const ownerStillOnline = remaining.length > 0;
-        if (room.mediaSources?.[leaving.ownerKey] === socketId) {
-            if (ownerStillOnline) {
-                const fallback=[...remaining].sort((a,b)=>(b.joinedAt||0)-(a.joinedAt||0))[0];
-                room.mediaSources[leaving.ownerKey]=fallback.id;
-                io.to(code).emit('media-source-selected',{ownerKey:leaving.ownerKey,socketId:fallback.id,name:fallback.name,automatic:true,deviceCount:remaining.length});
-            } else delete room.mediaSources[leaving.ownerKey];
-        }
-        io.to(code).emit('user-left', { id:socketId, ownerKey:leaving.ownerKey, name:leaving.name, ownerStillOnline });
-    }
-
-    socket.on('disconnect', (reason) => {
+    socket.on('disconnect', () => {
         const code = socket.data.roomCode;
-        const room = code && rooms[code];
-        const leaving = room?.players?.[socket.id];
-        if (!leaving) return console.log('❌ Saiu:', socket.id, reason || '');
-
-        const intentional = reason === 'client namespace disconnect' || reason === 'server namespace disconnect';
-        if (intentional) {
-            finalizeSocketDeparture(code, socket.id);
-            console.log('❌ Saiu:', socket.id, reason || '');
-            return;
+        if (code && rooms[code]?.players[socket.id]) {
+            const room = rooms[code];
+            const leaving = room.players[socket.id];
+            delete room.players[socket.id];
+            const remaining = roomOwnerEndpoints(room, leaving.ownerKey);
+            const ownerStillOnline = remaining.length > 0;
+            if(room.mediaSources?.[leaving.ownerKey] === socket.id){
+                if(ownerStillOnline){
+                    const fallback=[...remaining].sort((a,b)=>(b.joinedAt||0)-(a.joinedAt||0))[0];
+                    room.mediaSources[leaving.ownerKey]=fallback.id;
+                    io.to(code).emit('media-source-selected',{ownerKey:leaving.ownerKey,socketId:fallback.id,name:fallback.name,automatic:true,deviceCount:remaining.length});
+                } else delete room.mediaSources[leaving.ownerKey];
+            }
+            io.to(code).emit('user-left', { id:socket.id, ownerKey:leaving.ownerKey, name:leaving.name, ownerStillOnline });
         }
-
-        // Queda de Wi‑Fi/4G, pausa breve do navegador ou troca de rede não remove
-        // imediatamente o jogador. Há uma janela para o Socket.IO recuperar a sessão.
-        leaving._disconnectedAt = Date.now();
-        const previous = disconnectCleanupTimers.get(socket.id);
-        if (previous) clearTimeout(previous);
-        const timer = setTimeout(() => finalizeSocketDeparture(code, socket.id), 22000);
-        timer.unref?.();
-        disconnectCleanupTimers.set(socket.id, timer);
-        console.log('🟡 Conexão temporariamente interrompida:', socket.id, reason || '');
+        console.log('❌ Saiu:', socket.id);
+        // A sala NÃO é apagada quando fica vazia: configuração, fichas, tokens,
+        // cenário e música devem existir quando os jogadores voltarem.
     });
 });
 
@@ -1310,8 +1388,8 @@ async function flushAllRooms() {
     for (const code of Object.keys(rooms)) {
         try { await persistRoom(code); } catch (_) {}
     }
-    if (jsonSaveTimer) { clearTimeout(jsonSaveTimer); jsonSaveTimer = null; }
-    try { await writeJsonSnapshot(); } catch (_) {}
+    // Dá tempo para o espelho JSON gravar a última versão antes do encerramento.
+    await new Promise(resolve => setTimeout(resolve, 220));
 }
 
 let shuttingDown = false;

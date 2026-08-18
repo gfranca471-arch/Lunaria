@@ -234,57 +234,29 @@ A autorização continua vinculada à campanha e ocorre apenas na primeira cria�
 - Celular: 112×153 px.
 - Mantidos: ordem 001/002/003, alça individual `•••`, arrasto livre e duplo clique para voltar à posição inicial.
 
-
-## V21.5 — prioridade para videochamada em grupo
-
-- A malha WebRTC é reconstruída de forma determinística para todos os endpoints da sala, com verificações logo após a entrada e monitor de saúde periódico.
-- A ponta que responde a uma oferta é forçada a usar transceivers `sendrecv`, garantindo áudio e vídeo nos dois sentidos.
-- Se câmera/microfone forem liberados depois da entrada, a ponta não iniciadora solicita renegociação ao iniciador em vez de ficar presa em `recvonly`.
-- Áudio remoto usa elementos `<audio>` dedicados por jogador; os elementos de vídeo ficam sempre mudos para evitar que `muted`/re-render do card silencie outro participante.
-- Reconexão usa recriação controlada do par + ICE restart, sem apagar os demais participantes.
-- Durante chamada, efeitos do mapa passam para orçamento de partículas/FPS reduzido; o vídeo usa bitrate e framerate adaptativos, preservando banda e CPU para voz.
-- `TURN_ICE_SERVERS_JSON` foi adicionado como alternativa a `TURN_URL`, `TURN_USERNAME` e `TURN_CREDENTIAL`. O endpoint `/health` informa `turnConfigured`.
-
-### TURN e redes móveis
-STUN permite tentar a conexão direta, mas algumas combinações de 4G/5G, CGNAT, Wi‑Fi corporativo e firewalls exigem um servidor TURN. Para confiabilidade semelhante a serviços de conferência, configure TURN no Render. O projeto aceita:
-
-```text
-TURN_URL=turn:servidor:3478,turns:servidor:5349
-TURN_USERNAME=...
-TURN_CREDENTIAL=...
-```
-
-ou um array completo:
-
-```text
-TURN_ICE_SERVERS_JSON=[{"urls":"turn:servidor:3478","username":"...","credential":"..."}]
-```
-
-Sem TURN, a chamada ainda tenta conexão direta e reconecta automaticamente, mas não é tecnicamente possível garantir passagem por todas as redes/NATs.
+## V21.5
+- Câmeras individuais 30% menores, ainda verticais e arrastáveis.
+- Narrador pode ocultar/mostrar o número de cada câmera sem perder a ordem salva.
+- Cada jogador escolhe a cor do próprio nome na tela de entrada; chat e identificação da câmera usam a cor escolhida.
+- Narrador pode editar/mover/remover qualquer token; jogadores editam os próprios tokens.
+- Token usa recorte circular real e fundo transparente; enquadramento mantém zoom e deslocamento internos, e o X de morto fica dentro do círculo.
+- Chuva, tempestade, relâmpagos, fogo e névoa foram refeitos com composição, glow, bancos atmosféricos e intensidade ampliada, mantendo orçamento adaptativo para proteger a videochamada.
+- Névoa desfoca somente a imagem do mapa, sem desfocar os tokens.
+- A face correspondente ao resultado lógico continua sendo orientada para cima; os dados permanecem 3,5 s após o resultado.
 
 
-## V21.6 — controles contextuais e ajustes de interface
-
-- O painel do token selecionado acompanha o token na tela e é reposicionado automaticamente durante movimento, zoom e pan, evitando ficar sob os controles do mapa.
-- A biblioteca Efeitos & Ambiente ganhou volume local de 0–100%, salvo no aparelho e aplicado ao ambiente/ciclo dia-noite.
-- O nome de cada jogador no chat usa sua cor persistente da campanha; novos jogadores recebem cores diferentes enquanto houver cores livres na paleta.
-- O aviso de reativação/reconexão da chamada ganhou botão ×. Ao dispensá-lo, o aviso não volta a interromper a tela por dois minutos, mas a chamada continua tentando se recuperar em segundo plano.
-
-
-## V21.7 — estabilidade de conexão e dados mais rápidos
-
-- Socket.IO usa heartbeat mais tolerante (`pingInterval` 25 s / `pingTimeout` 60 s) e recuperação de sessão por 20 s.
-- Quedas curtas de Wi-Fi/4G não removem o jogador imediatamente; a sessão pode ser recuperada sem sair da mesa.
-- Cliente tenta reconectar indefinidamente com backoff e não troca mais para um falso "modo local" em oscilações temporárias.
-- Persistência JSON passou a ser assíncrona e debounced; gravações no PostgreSQL são coalescidas para não bloquear heartbeat/WebRTC.
-- Dados assentam mais rápido e desaparecem 1,5 s após o resultado; timeout máximo da física reduzido para 3,2 s.
+## V21.6 — orientação da câmera e WebRTC adaptativo
+- Prévia local da câmera frontal espelhada apenas neste aparelho; vídeos remotos permanecem na orientação real.
+- Captura e bitrate adaptados ao número de participantes e às condições reais de RTT/perda observadas via getStats().
+- Menos renegociações agressivas durante estados WebRTC `disconnected` transitórios.
+- Voz preservada em 72 kbps e vídeo com `maintain-framerate` para reduzir atraso percebido.
+- TURN continua opcional via `TURN_URL`, `TURN_USERNAME` e `TURN_CREDENTIAL`; é recomendado para redes móveis/NAT restritivo.
 
 
-## V21.8 — coordenadas universais do mapa
+## V21.7 — imagens e reroll V5
 
-- Tokens, grade e ferramentas do mapa agora usam o retângulo real da imagem do cenário como plano de coordenadas, em vez do tamanho da tela do aparelho.
-- O mapa mantém a mesma proporção em celular e computador; `x/y` dos tokens passam a significar a mesma posição relativa no cenário em qualquer resolução.
-- O tamanho e deslocamento da grade são persistidos também em proporção ao mapa (`sizePct`, `offsetXPct`, `offsetYPct`), mantendo o mesmo quadrado em telas diferentes.
-- Salas antigas são migradas automaticamente pelo Narrador na primeira abertura da imagem; a configuração normalizada é persistida na sala.
-- Tokens novos e tokens redimensionados também recebem tamanho proporcional ao mapa, para manter a escala visual entre aparelhos.
-- Fog, objetos, luzes, efeitos, templates e visão dinâmica foram alinhados ao mesmo plano real do mapa.
+- Cenário pode ser enviado diretamente do computador ou por link. O arquivo é enviado por HTTP, convertido no servidor para WebP e só a URL final é sincronizada pelo Socket.IO, reduzindo tráfego pesado no canal usado por sala, dados e sinalização WebRTC.
+- Conversão de formatos é feita com `sharp`; esta versão requer Node.js 20.9+ e inclui `sharp` nas dependências.
+- Vampiro V5 ganhou **Re-rolar falhas (sem Fome)**: preserva sucessos e todos os dados de Fome e rola novamente apenas D10 comuns que ficaram abaixo da dificuldade da rolagem anterior. O resultado novo é decidido no servidor e enviado igual para todos.
+- A seleção de cor do nome foi removida da tela de entrada. Perfis antigos mantêm a cor salva; novos perfis recebem a cor automaticamente pelo servidor.
+- Efeitos visuais continuam limitados a ~30 FPS e câmera/áudio permanecem no WebRTC; o upload de cenário não trafega mais como base64 pelo socket, evitando competir com eventos em tempo real.

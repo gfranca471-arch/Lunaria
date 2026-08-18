@@ -14,8 +14,6 @@ services:
         value: v.f.lune@gmail.com
       - key: PUBLIC_BASE_URL
         sync: false
-      - key: TURN_ICE_SERVERS_JSON
-        sync: false
       - key: TURN_URL
         sync: false
       - key: TURN_USERNAME
