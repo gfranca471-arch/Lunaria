@@ -270,3 +270,37 @@ A autorização continua vinculada à campanha e ocorre apenas na primeira cria�
 - Controle de volume dos efeitos restaurado abaixo das faixas. Música e efeitos iniciam em 40%.
 - Ciclo dia/noite preserva 00:00 corretamente no cliente, servidor e após recarregar a sala.
 - WebRTC de câmera/áudio e sincronização compartilhada permanecem no mesmo fluxo da V21.7.
+
+
+## V21.9 — área útil do mapa e espaço livre da mesa
+
+- O cenário pode ser reduzido de **100% até 50%**, permanecendo centralizado; o reset volta para 100%.
+- As faixas escuras que aparecem ao redor de um mapa menor continuam sendo **área útil da mesa**, e não uma região morta.
+- A ferramenta **Objetos / Imagens** usa a área inteira da mesa: imagens temporárias podem ser colocadas e arrastadas tanto sobre o mapa quanto nas áreas escuras disponíveis.
+- Tokens, grade, efeitos, iluminação, templates, visão dinâmica e Fog of War continuam vinculados à transformação do mapa, mantendo o alinhamento quando o cenário aumenta ou diminui.
+- O arrasto do cenário só é ativado acima de 100%; em 100% ou menos ele permanece centralizado. Quando ampliado, o pan é limitado às bordas válidas.
+- Ao carregar um novo cenário, zoom e posição são reiniciados para 100%/centro. Redimensionar a janela recalcula os limites.
+- Mantidas as correções e recursos da V21.8, sem alteração na sinalização WebRTC/câmera/áudio.
+
+
+---
+
+## V22.1 — WebRTC estável para Northflank
+
+Esta versão mantém integralmente os recursos da V21.9 e altera somente a infraestrutura de comunicação e pequenos parâmetros de mídia.
+
+- Sem LiveKit, Cloudflare Realtime ou outro serviço de videoconferência.
+- Áudio/vídeo continuam WebRTC P2P entre os navegadores; o Northflank só faz sinalização via Socket.IO.
+- Cliente Socket.IO agora é servido pelo próprio servidor (`/socket.io/socket.io.js`), evitando dependência/versionamento externo.
+- Conexão Socket.IO começa por polling e faz upgrade para WebSocket, com reconexão automática tolerante a proxies.
+- A malha WebRTC é refeita automaticamente quando o Northflank reconecta e muda os `socket.id`.
+- Handshake `webrtc-ready`, confirmação de offer/answer, watchdog de conexão e ICE restart automático.
+- Câmera mais leve para chamadas com várias pessoas; voz tem prioridade.
+- Mantido suporte a dois aparelhos do mesmo jogador e seleção da fonte de câmera/microfone.
+- TURN continua opcional via `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL`; não é exigido para usar esta versão.
+- `Dockerfile` incluído para implantação previsível no Northflank.
+
+### Northflank
+Use uma porta HTTP pública que aponte para `3000`. O servidor também respeita `process.env.PORT` e escuta em `0.0.0.0`.
+
+Para testar o servidor: `/health`. O campo `socketClients` mostra quantos navegadores estão conectados ao Socket.IO naquele momento.

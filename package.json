@@ -1,7 +1,7 @@
 {
   "name": "mesa-rpg-online",
-  "version": "2.1.8",
-  "description": "Mesa RPG Online V21.8 com editor de token fixo, efeitos retangulares, reroll único, áudio 40% e ciclo dia/noite corrigido",
+  "version": "2.2.1",
+  "description": "Mesa RPG Online V22.1 — base V21.9 preservada, WebRTC P2P e Socket.IO estabilizados para Northflank",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

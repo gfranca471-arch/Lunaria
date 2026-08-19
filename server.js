@@ -16,15 +16,21 @@ try { sharp = require('sharp'); } catch (err) { console.warn('⚠️ sharp indis
 const { Server } = require('socket.io');
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
-    transports: ['websocket', 'polling'],
+    transports: ['polling', 'websocket'],
+    // Sinalização de mídia é pequena; desabilitar compressão de frames WebSocket
+    // reduz CPU no plano leve do Northflank. Polling continua compactado.
+    perMessageDeflate: false,
+    httpCompression: true,
     // Base64 aumenta o tamanho dos arquivos. 16 MB cobre músicas de até 5 MB
     // e imagens de cenário/tokens sem derrubar a conexão.
     maxHttpBufferSize: 16 * 1024 * 1024,
-    pingInterval: 10000,
-    pingTimeout: 20000
+    pingInterval: 15000,
+    pingTimeout: 30000,
+    upgradeTimeout: 10000
 });
 
 const PUBLIC_DIR = path.resolve(__dirname);
@@ -71,7 +77,9 @@ const V6_APPROVAL_TTL_MS = 30 * 60 * 1000;
 function rtcConfig() {
     const iceServers = [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' }
     ];
     try {
         const rawTurn = String(process.env.TURN_URL || '').trim();
@@ -91,9 +99,10 @@ function rtcConfig() {
     }
     return {
         iceServers,
-        iceCandidatePoolSize: 8,
+        iceCandidatePoolSize: 10,
         bundlePolicy: 'max-bundle',
-        rtcpMuxPolicy: 'require'
+        rtcpMuxPolicy: 'require',
+        iceTransportPolicy: 'all'
     };
 }
 
@@ -734,6 +743,7 @@ app.get('/health', (req, res) => {
         index: fs.existsSync(INDEX_FILE),
         mesa: fs.existsSync(TABLE_FILE),
         storage: storageMode,
+        socketClients: io.engine.clientsCount,
         turnConfigured: Boolean(process.env.TURN_URL),
         v6ApprovalEmail: V6_APPROVAL_EMAIL,
         v6EmailConfigured: Boolean(process.env.SMTP_USER && process.env.SMTP_PASS),
@@ -1352,17 +1362,30 @@ io.on('connection', (socket) => {
         socket.to(code).emit('media-state', { id:socket.id, cameraOn:player.cameraOn, micOn:player.micOn, screenSharing:player.screenSharing });
     });
 
-    // WebRTC signaling fica somente entre membros da mesma sala.
-    function relayRtc(event, data) {
+    // WebRTC signaling fica somente entre membros da mesma sala. Offer/answer
+    // recebem ACK para o navegador saber se o alvo ainda existe depois de uma
+    // reconexão do Northflank. ICE continua sem ACK para não aumentar tráfego.
+    function relayRtc(event, data, ack) {
         const code = socket.data.roomCode;
-        const target = io.sockets.sockets.get(data.target);
-        if (!code || !target || target.data.roomCode !== code) return;
+        const targetId=String(data?.target||'');
+        const target = io.sockets.sockets.get(targetId);
+        if (!code || !target || target.data.roomCode !== code) {
+            if(typeof ack==='function') ack({ok:false,reason:'target-unavailable'});
+            return false;
+        }
         target.emit(event, { from: socket.id, ...data.payload });
+        if(typeof ack==='function') ack({ok:true});
+        return true;
     }
-    socket.on('webrtc-offer', data => relayRtc('webrtc-offer', { target:data.target, payload:{ offer:data.offer } }));
-    socket.on('webrtc-answer', data => relayRtc('webrtc-answer', { target:data.target, payload:{ answer:data.answer } }));
-    socket.on('webrtc-ice', data => relayRtc('webrtc-ice', { target:data.target, payload:{ candidate:data.candidate } }));
-    socket.on('webrtc-reconnect-request', data => relayRtc('webrtc-reconnect-request', { target:data.target, payload:{} }));
+    socket.on('webrtc-ready', () => {
+        const code=socket.data.roomCode;
+        if(!code || !rooms[code]?.players[socket.id]) return;
+        socket.to(code).emit('webrtc-peer-ready',{id:socket.id,ownerKey:socket.data.ownerKey,name:socket.data.playerName});
+    });
+    socket.on('webrtc-offer', (data,ack) => relayRtc('webrtc-offer', { target:data?.target, payload:{ offer:data?.offer } },ack));
+    socket.on('webrtc-answer', (data,ack) => relayRtc('webrtc-answer', { target:data?.target, payload:{ answer:data?.answer } },ack));
+    socket.on('webrtc-ice', data => relayRtc('webrtc-ice', { target:data?.target, payload:{ candidate:data?.candidate } }));
+    socket.on('webrtc-reconnect-request', (data,ack) => relayRtc('webrtc-reconnect-request', { target:data?.target, payload:{ reason:String(data?.reason||'') } },ack));
 
     socket.on('disconnect', () => {
         const code = socket.data.roomCode;
@@ -1416,7 +1439,7 @@ const PORT = process.env.PORT || 3000;
         pgPool = null; storageMode = 'json'; disablePostgres = true;
         await initStorage();
     }
-    server.listen(PORT, () => {
+    server.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Servidor RPG Mesa na porta ${PORT}`);
         console.log(`📁 Diretório público: ${PUBLIC_DIR}`);
         console.log(`🏠 index.html: ${fs.existsSync(INDEX_FILE) ? 'OK' : 'AUSENTE'}`);
