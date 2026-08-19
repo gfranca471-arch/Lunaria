@@ -1,7 +1,7 @@
 {
   "name": "mesa-rpg-online",
-  "version": "2.2.1",
-  "description": "Mesa RPG Online V22.1 — base V21.9 preservada, WebRTC P2P e Socket.IO estabilizados para Northflank",
+  "version": "2.2.2",
+  "description": "Mesa RPG Online V22.2 — base V21.9 preservada, WebRTC P2P estável e roteamento independente de vídeo, microfone e áudio por aparelho",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

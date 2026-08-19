@@ -238,7 +238,7 @@
         .media-source-box { display:none;padding:8px;margin:6px 0 9px;border:1px solid rgba(79,172,254,.32);background:rgba(79,172,254,.07);border-radius:8px;font-size:9px;line-height:1.45;color:#dfe9f7; }
         .media-source-box.active { display:block; }
         .media-source-box button { width:100%;margin-top:6px;padding:7px;border:1px solid rgba(255,255,255,.14);border-radius:7px;background:#191925;color:#fff;cursor:pointer;font-size:10px;font-weight:700; }
-        .media-source-devices{display:flex;flex-direction:column;gap:5px;margin-top:7px}.media-source-device{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center;padding:6px 7px;border:1px solid rgba(255,255,255,.10);border-radius:7px;background:rgba(0,0,0,.18)}.media-source-device.active{border-color:rgba(79,172,254,.65);background:rgba(79,172,254,.12)}.media-source-device .device-label{font-size:9px;color:#eef6ff}.media-source-device .device-state{font-size:8px;color:var(--text-dim)}.media-source-device button{width:auto!important;margin:0!important;padding:5px 7px!important;font-size:9px!important}
+        .media-source-devices{display:flex;flex-direction:column;gap:6px;margin-top:7px}.media-source-device{display:flex;flex-direction:column;gap:6px;padding:7px;border:1px solid rgba(255,255,255,.10);border-radius:7px;background:rgba(0,0,0,.18)}.media-source-device.active{border-color:rgba(79,172,254,.65);background:rgba(79,172,254,.10)}.media-source-device .device-label{font-size:9px;color:#eef6ff;font-weight:700}.media-source-device .device-state{font-size:8px;color:var(--text-dim)}.media-route-buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.media-route-buttons button{width:100%!important;margin:0!important;padding:6px 4px!important;font-size:8px!important;border:1px solid rgba(255,255,255,.13)!important;background:#171722!important;color:#d9e2ef!important;border-radius:6px!important}.media-route-buttons button.active{border-color:rgba(79,172,254,.9)!important;background:rgba(79,172,254,.20)!important;color:#fff!important;box-shadow:0 0 0 1px rgba(79,172,254,.15) inset}.media-route-summary{margin-top:6px;padding:6px 7px;border-radius:7px;background:rgba(0,0,0,.20);font-size:8px;line-height:1.55;color:#cfd9e7}.media-route-summary b{color:#fff}.media-source-device button{cursor:pointer}.media-source-device button:disabled{cursor:default;opacity:1}
         @media(max-width:700px){.v6-point-grid{grid-template-columns:1fr}.v6-dot-input{grid-template-columns:minmax(0,1fr) 72px}}
 
         /* SIDEBAR */
@@ -1072,9 +1072,9 @@
             <div class="room-info-row"><span class="label">Sistema</span><span class="value" id="roomSystem">Lobisomem</span></div>
             <div class="room-info-row"><span class="label">Papel</span><span class="value" id="roomRole">Narrador</span></div>
             <div class="room-info-row"><span class="label">Jogadores</span><span class="value" id="roomPlayerCount">1/8</span></div>
-            <div class="section-title" style="margin-top:8px;">Áudio e vídeo deste aparelho</div>
-            <div style="font-size:9px;color:var(--text-dim);line-height:1.4;margin-bottom:6px;">A saída de som é escolhida automaticamente pelo aparelho (fone, Bluetooth ou alto-falante). Se o mesmo jogador entrar em dois aparelhos, escolha abaixo qual deles enviará câmera e microfone.</div>
-            <div class="media-source-box" id="mediaSourceBox"><div id="mediaSourceStatus">Este aparelho está usando a câmera e o microfone.</div><div class="media-source-devices" id="mediaSourceDevices"></div><button type="button" id="claimMediaSourceBtn" onclick="claimThisDeviceForMedia()">📱 Usar câmera e microfone deste aparelho</button></div>
+            <div class="section-title" style="margin-top:8px;">Câmera, microfone e áudio</div>
+            <div style="font-size:9px;color:var(--text-dim);line-height:1.45;margin-bottom:6px;">Se o mesmo jogador estiver em dois aparelhos, escolha separadamente qual aparelho envia <b>vídeo</b>, qual envia o <b>microfone</b> e em qual aparelho você quer <b>ouvir a chamada</b>. O vídeo continua visível nos dois aparelhos.</div>
+            <div class="media-source-box" id="mediaSourceBox"><div id="mediaSourceStatus">Este aparelho está usando a mídia da chamada.</div><div class="media-route-summary" id="mediaRouteSummary"></div><div class="media-source-devices" id="mediaSourceDevices"></div><button type="button" id="claimMediaSourceBtn" onclick="claimThisDeviceForMedia()">📱 Usar vídeo + microfone + áudio neste aparelho</button></div>
             <div class="control-group" id="cameraDeviceGroup" style="display:none;">
                 <label>Câmera</label>
                 <select id="cameraSelect" onchange="changeCameraDevice(this.value)"><option value="">Padrão do aparelho</option></select>
@@ -1155,7 +1155,7 @@ const state = {
     socket: null, socketId: null,
     players: {},
     localStream: null, screenStream: null,
-    peerConnections: {}, remoteStreams: {}, logicalStreams:{}, mediaSources:{}, cameraOrder:[], cameraNumberHidden:[], pendingIce: {}, peerReconnectTimers: {}, peerConnectWatchdogs:{}, peerAttemptCounts:{}, peerHealthTimer:null, peerStatsTimer:null,
+    peerConnections: {}, remoteStreams: {}, logicalStreams:{}, mediaSources:{}, mediaRouting:{}, cameraOrder:[], cameraNumberHidden:[], pendingIce: {}, peerReconnectTimers: {}, peerConnectWatchdogs:{}, peerAttemptCounts:{}, peerHealthTimer:null, peerStatsTimer:null,
     isCameraOn: false, isMicOn: false, isScreenSharing: false,
     musicTracks: [], currentTrack: null, isLooping: true, sfxTracks:[], sfxState:{trackId:null,playing:false,loop:false},
     sheets: {},
@@ -1374,7 +1374,9 @@ function initSocket() {
         state.socketId = state.socket.id;
         state.hadSocketConnection=true;
         state.rtcReady=false;
-        if (state.autoMedia) await autoStartLocalMedia(true);
+        // A captura de câmera/microfone só é aberta depois que o servidor informa
+        // qual função pertence a este aparelho. Assim, um segundo PC/celular não
+        // rouba câmera, microfone ou áudio automaticamente do primeiro.
         emitJoinRoom();
         showToast(isReconnect?'Servidor reconectado. Restaurando chamada…':'Conectado ao servidor!', 'success');
     });
@@ -1396,10 +1398,11 @@ function initSocket() {
     state.socket.on('room-error', msg => { const text=msg||'Erro ao entrar na sala.'; showToast(text,'error'); try{sessionStorage.setItem('rpgLoginError',text);}catch(_){} setTimeout(()=>window.location.replace('index.html'),900); });
     state.socket.on('v6-authorization-pending', data => { startV6ApprovalPoll(data.approvalId, data.email, data.emailMethod||'email'); showToast('Pedido de autorização V6 enviado para '+(data.email||'a administradora')+'.','info'); });
 
-    state.socket.on('room-joined', (data) => {
+    state.socket.on('room-joined', async (data) => {
         stopV6ApprovalPoll(); hideV6ApprovalBanner(); state.pendingV6ApprovalId='';
         state.players = data.players || {};
         state.mediaSources = data.mediaSources || {};
+        state.mediaRouting = data.mediaRouting || {};
         state.cameraOrder = Array.isArray(data.cameraOrder) ? data.cameraOrder.slice() : [];
         state.cameraNumberHidden = Array.isArray(data.cameraNumberHidden) ? data.cameraNumberHidden.slice() : [];
         state.gridConfig = normalizeGridConfig(data.gridConfig);
@@ -1445,6 +1448,9 @@ function initSocket() {
         Object.keys(state.peerConnections).forEach(id=>{ if(!state.players[id]) closePeerConnection(id); });
         renderVideoLayout();
         state.rtcReady=true;
+        // Agora que sabemos se este socket é Vídeo, Microfone e/ou Áudio do jogador,
+        // ativamos somente as capturas atribuídas a este aparelho.
+        await applyOwnMediaRouting('initial', true);
         startPeerHealthMonitor();
         sendMediaState();
         state.socket?.emit('webrtc-ready');
@@ -1567,27 +1573,18 @@ function initSocket() {
         state.cameraNumberHidden = Array.isArray(data?.cameraNumberHidden) ? data.cameraNumberHidden.slice() : [];
         renderVideoLayout();
     });
+    // V22.2: roteamento independente de câmera, microfone e saída de áudio.
+    // Compatibilidade: se um servidor antigo ainda emitir media-source-selected,
+    // tratamos essa fonte como vídeo+microfone sem alterar o aparelho que escuta.
     state.socket.on('media-source-selected', async data => {
         if(!data?.ownerKey || !data?.socketId) return;
         state.mediaSources[data.ownerKey]=data.socketId;
-        if(data.ownerKey===state.ownerKey){
-            if(data.socketId===state.socketId){
-                await activateThisDeviceAsMediaSource(true);
-            }else{
-                await disableLocalCallMedia(true);
-                // O outro aparelho do mesmo jogador também precisa de uma conexão WebRTC
-                // ativa para que este computador receba sua câmera e seu microfone.
-                const pc=state.peerConnections[data.socketId];
-                if(!pc || pc.signalingState==='closed' || pc.connectionState==='failed'){
-                    if(shouldInitiatePeer(data.socketId)) setTimeout(()=>createPeerOffer(data.socketId,true).catch(()=>{}),80);
-                    else state.socket?.emit('webrtc-reconnect-request',{target:data.socketId});
-                }
-            }
-        }
-        refreshMediaSourceChooser(data.deviceCount);
-        renderVideoLayout();
-        setTimeout(()=>attachLogicalMedia(data.ownerKey),120);
-        setTimeout(ensurePeerMesh,250);
+        const current=mediaRouteForOwner(data.ownerKey);
+        state.mediaRouting[data.ownerKey]={...current,video:data.socketId,mic:data.socketId};
+        await handleMediaRoutingUpdate({ownerKey:data.ownerKey,routing:state.mediaRouting[data.ownerKey],deviceCount:data.deviceCount,changedKind:'legacy'});
+    });
+    state.socket.on('media-routing-updated', async data => {
+        await handleMediaRoutingUpdate(data);
     });
     state.socket.on('media-state', data => {
         if(state.players[data.id]) Object.assign(state.players[data.id], {cameraOn:data.cameraOn,micOn:data.micOn,screenSharing:data.screenSharing});
@@ -1655,9 +1652,13 @@ async function unlockAllMediaPlayback(){
     if(ok || !state.pendingMusicState) hideMediaGate();
 }
 async function activateMediaFromUser(){
-    await autoStartLocalMedia(false);
+    // Respeita o roteamento por aparelho: o botão de desbloqueio não liga
+    // câmera/microfone no PC se essas funções estiverem escolhidas no celular.
+    if(state.socket?.connected && state.ownerKey) await applyOwnMediaRouting('all',false);
+    else await autoStartLocalMedia(false);
     await syncLocalTracksToAllPeers(); await ensureSendDirections(); sendMediaState();
     await unlockAllMediaPlayback();
+    applyRoomAudioRouting();
     renderVideoLayout();
 }
 function replaceLocalTrack(kind,newTrack){
@@ -1762,63 +1763,208 @@ async function changeCameraDevice(deviceId){
         showToast('Câmera alterada.','success');
     }catch(err){ console.warn(err); showToast('Não foi possível usar essa câmera.','error'); }
 }
-// Saída de áudio é intencionalmente deixada para o sistema operacional/navegador.
+// A escolha abaixo decide EM QUAL APARELHO do mesmo jogador a chamada será
+// ouvida. Dentro desse aparelho, Android/iOS/Windows continuam escolhendo
+// automaticamente alto-falante, fone ou Bluetooth.
 async function applyAudioSinkToElement(){ return true; }
-async function applyAudioSinkToAll(){ return true; }
+async function applyAudioSinkToAll(){ applyRoomAudioRouting(); return true; }
 
 function ownDeviceEndpoints(){
     if(!state.ownerKey) return [];
     return Object.values(state.players).filter(p=>logicalKeyForPlayer(p)===state.ownerKey);
 }
+function mediaRouteForOwner(ownerKey){
+    const endpoints=Object.values(state.players).filter(p=>logicalKeyForPlayer(p)===ownerKey);
+    const valid=id=>Boolean(id && endpoints.some(p=>p.id===id));
+    const raw=(state.mediaRouting?.[ownerKey] && typeof state.mediaRouting[ownerKey]==='object') ? state.mediaRouting[ownerKey] : {};
+    const legacy=valid(state.mediaSources?.[ownerKey]) ? state.mediaSources[ownerKey] : '';
+    const fallback=endpoints[0]?.id || (ownerKey===state.ownerKey ? state.socketId : '') || '';
+    return {
+        video: valid(raw.video) ? raw.video : (legacy || fallback),
+        mic: valid(raw.mic) ? raw.mic : (legacy || fallback),
+        audio: valid(raw.audio) ? raw.audio : fallback
+    };
+}
+function isThisDeviceRoute(kind){
+    if(!state.socketId || !state.ownerKey) return true;
+    const route=mediaRouteForOwner(state.ownerKey);
+    return !route[kind] || route[kind]===state.socketId;
+}
+function shouldReceiveRoomAudioHere(){
+    if(!state.socket?.connected || !state.ownerKey) return true;
+    return isThisDeviceRoute('audio');
+}
+function deviceLabelForSocket(socketId){
+    const endpoints=ownDeviceEndpoints().sort((a,b)=>(a.deviceIndex||0)-(b.deviceIndex||0));
+    const p=endpoints.find(x=>x.id===socketId);
+    if(!p) return '—';
+    const idx=p.deviceIndex || (endpoints.indexOf(p)+1);
+    return `Aparelho ${idx}${p.id===state.socketId?' (este)':''}`;
+}
+async function unlockCallMediaPlayback(){
+    let ok=true;
+    for(const el of document.querySelectorAll('video')){
+        if(!el.srcObject) continue;
+        try{ await el.play(); }catch(err){ ok=false; if(err?.name==='NotAllowedError') showMediaGate(); }
+    }
+    return ok;
+}
+function applyRoomAudioRouting(){
+    const listenHere=shouldReceiveRoomAudioHere();
+    for(const group of logicalPlayerGroups()){
+        const isOwn=group.ownerKey===state.ownerKey;
+        const isNarrator=group.role==='narrador';
+        const video=isNarrator ? document.getElementById('narradorCam') : document.getElementById('video-owner-'+domKey(group.ownerKey));
+        if(video) video.muted = isOwn || !listenHere;
+    }
+    // Música/efeitos sincronizados também seguem o aparelho escolhido para ouvir,
+    // evitando eco quando PC e celular do mesmo jogador ficam abertos juntos.
+    for(const id of ['audioPlayer','sfxPlayer','dayNightAudio']){
+        const el=document.getElementById(id); if(el) el.muted=!listenHere;
+    }
+}
+function stopLocalMediaKind(kind){
+    if(kind==='video'){
+        if(state.isScreenSharing){ try{state.screenStream?.getTracks().forEach(t=>t.stop());}catch(_){} state.screenStream=null; state.isScreenSharing=false; }
+        const track=state.localStream?.getVideoTracks()[0];
+        replaceLocalTrack('video',null); if(track){try{track.stop();}catch(_){} }
+        state.isCameraOn=false;
+    } else if(kind==='mic'){
+        const track=state.localStream?.getAudioTracks()[0];
+        replaceLocalTrack('audio',null); if(track){try{track.stop();}catch(_){} }
+        state.isMicOn=false;
+    }
+}
+async function applyOwnMediaRouting(changedKind='all',silent=true,previousSocketId=''){
+    if(!state.ownerKey || !state.socketId) return;
+    const route=mediaRouteForOwner(state.ownerKey);
+    const changeAll=['all','initial','join','disconnect','legacy',''].includes(String(changedKind||''));
+    let failedKind='';
+    try{
+        if(changeAll || changedKind==='video'){
+            if(route.video===state.socketId){
+                if(state.autoMedia && !state.isCameraOn) await ensureLocalMedia(true,false,silent);
+            }else if(state.isCameraOn || state.isScreenSharing){
+                stopLocalMediaKind('video');
+            }
+        }
+    }catch(_){ failedKind='video'; }
+    try{
+        if(changeAll || changedKind==='mic'){
+            if(route.mic===state.socketId){
+                if(state.autoMedia && !state.isMicOn) await ensureLocalMedia(false,true,silent);
+            }else if(state.isMicOn){
+                stopLocalMediaKind('mic');
+            }
+        }
+    }catch(_){ if(!failedKind) failedKind='mic'; }
+    await syncLocalTracksToAllPeers();
+    await ensureSendDirections();
+    sendMediaState();
+    updateLocalMediaUI();
+    applyRoomAudioRouting();
+    if(route.audio===state.socketId) unlockCallMediaPlayback().catch(()=>{});
+    if(failedKind && state.socket?.connected){
+        state.socket.emit('media-route-activation-failed',{kind:failedKind,previousSocketId});
+        if(!silent) showToast(`Não foi possível ativar ${failedKind==='video'?'a câmera':'o microfone'} neste aparelho.`,'error');
+    }
+}
+async function handleMediaRoutingUpdate(data){
+    if(!data?.ownerKey || !data?.routing) return;
+    state.mediaRouting[data.ownerKey]={...data.routing};
+    if(data.routing.video) state.mediaSources[data.ownerKey]=data.routing.video;
+    if(data.ownerKey===state.ownerKey){
+        await applyOwnMediaRouting(data.changedKind||'all',true,data.previousSocketId||'');
+    }
+    refreshMediaSourceChooser(data.deviceCount);
+    renderVideoLayout();
+    applyRoomAudioRouting();
+    setTimeout(()=>attachLogicalMedia(data.ownerKey),80);
+    setTimeout(()=>{ logicalPlayerGroups().forEach(g=>attachLogicalMedia(g.ownerKey)); },180);
+    setTimeout(ensurePeerMesh,250);
+}
 function refreshMediaSourceChooser(deviceCount){
-    const box=document.getElementById('mediaSourceBox'), status=document.getElementById('mediaSourceStatus'), btn=document.getElementById('claimMediaSourceBtn'), list=document.getElementById('mediaSourceDevices');
+    const box=document.getElementById('mediaSourceBox'), status=document.getElementById('mediaSourceStatus'), btn=document.getElementById('claimMediaSourceBtn'), list=document.getElementById('mediaSourceDevices'), summary=document.getElementById('mediaRouteSummary');
     if(!box) return;
-    const endpoints=ownDeviceEndpoints().sort((a,b)=>(a.deviceIndex||0)-(b.deviceIndex||0)), count=Number(deviceCount)||endpoints.length;
-    if(count<2){ box.classList.remove('active'); if(list)list.innerHTML=''; return; }
+    const endpoints=ownDeviceEndpoints().sort((a,b)=>(a.deviceIndex||0)-(b.deviceIndex||0));
+    const count=Number(deviceCount)||endpoints.length;
+    const route=mediaRouteForOwner(state.ownerKey);
+    if(count<2){
+        box.classList.remove('active');
+        if(list) list.innerHTML='';
+        applyRoomAudioRouting();
+        return;
+    }
     box.classList.add('active');
-    const selected=state.mediaSources?.[state.ownerKey];
-    const thisDevice=selected===state.socketId;
-    if(status) status.innerHTML=thisDevice ? '<b>Este aparelho</b> está enviando sua câmera e microfone para a sala.' : 'Seu outro aparelho está enviando câmera e microfone. Você pode trocar a fonte abaixo sem criar outro jogador.';
+    const hereVideo=route.video===state.socketId, hereMic=route.mic===state.socketId, hereAudio=route.audio===state.socketId;
+    if(status){
+        const roles=[];
+        if(hereVideo) roles.push('📹 vídeo');
+        if(hereMic) roles.push('🎤 microfone');
+        if(hereAudio) roles.push('🔊 áudio');
+        status.innerHTML=roles.length ? `<b>Este aparelho</b>: ${roles.join(' · ')}` : '<b>Este aparelho</b> está apenas acompanhando o vídeo da sala.';
+    }
+    if(summary){
+        summary.innerHTML=`<b>Vídeo:</b> ${escapeHtml(deviceLabelForSocket(route.video))}<br><b>Microfone:</b> ${escapeHtml(deviceLabelForSocket(route.mic))}<br><b>Ouvir chamada:</b> ${escapeHtml(deviceLabelForSocket(route.audio))}`;
+    }
     if(list){
         list.innerHTML=endpoints.map((p,i)=>{
-            const active=p.id===selected, here=p.id===state.socketId;
-            const media=`${p.cameraOn?'📹':'📷'} ${p.micOn?'🎤':'🔇'}`;
+            const videoActive=p.id===route.video, micActive=p.id===route.mic, audioActive=p.id===route.audio;
+            const anyActive=videoActive||micActive||audioActive;
+            const here=p.id===state.socketId;
+            const media=`${p.cameraOn?'📹 câmera ligada':'📷 câmera desligada'} · ${p.micOn?'🎤 mic ligado':'🔇 mic desligado'}`;
             const label=`Aparelho ${p.deviceIndex||i+1}${here?' · este aparelho':''}`;
-            return `<div class="media-source-device ${active?'active':''}"><div><div class="device-label">${escapeHtml(label)}</div><div class="device-state">${media}${active?' · fonte ativa':''}</div></div><button type="button" ${active?'disabled':''} onclick="selectMediaSourceDevice('${String(p.id).replace(/'/g,"\'")}')">${active?'✓ Em uso':'Usar'}</button></div>`;
+            const sid=String(p.id).replace(/'/g,"\\'");
+            return `<div class="media-source-device ${anyActive?'active':''}"><div><div class="device-label">${escapeHtml(label)}</div><div class="device-state">${media}</div></div><div class="media-route-buttons"><button type="button" class="${videoActive?'active':''}" onclick="selectMediaRouteDevice('video','${sid}')">${videoActive?'✓ ':''}📹 Vídeo</button><button type="button" class="${micActive?'active':''}" onclick="selectMediaRouteDevice('mic','${sid}')">${micActive?'✓ ':''}🎤 Mic</button><button type="button" class="${audioActive?'active':''}" onclick="selectMediaRouteDevice('audio','${sid}')">${audioActive?'✓ ':''}🔊 Ouvir</button></div></div>`;
         }).join('');
     }
-    if(btn){ btn.style.display=thisDevice?'none':'block'; btn.textContent='📱 Usar este aparelho'; }
-}
-async function disableLocalCallMedia(silent=false){
-    if(state.isScreenSharing){ try{state.screenStream?.getTracks().forEach(t=>t.stop());}catch(_){} state.screenStream=null; state.isScreenSharing=false; }
-    const tracks=state.localStream?.getTracks()||[];
-    tracks.forEach(t=>{try{t.stop();}catch(_){}});
-    state.localStream=new MediaStream();
-    state.isCameraOn=false; state.isMicOn=false;
-    await syncLocalTracksToAllPeers();
-    sendMediaState(); updateLocalMediaUI();
-    if(!silent) showToast('Câmera e microfone ficaram no outro aparelho.','info');
-}
-async function activateThisDeviceAsMediaSource(silent=false){
-    try{
-        await ensureLocalMedia(true,true,silent);
-        state.isCameraOn=Boolean(state.localStream?.getVideoTracks().find(t=>t.readyState==='live'));
-        state.isMicOn=Boolean(state.localStream?.getAudioTracks().find(t=>t.readyState==='live'));
-        await syncLocalTracksToAllPeers(); await ensureSendDirections(); sendMediaState(); updateLocalMediaUI();
-        refreshMediaDeviceSelectors().catch(()=>{});
-        if(!silent) showToast('Este aparelho agora envia sua câmera e microfone.','success');
-    }catch(_){ if(!silent) showMediaGate(); }
-}
-async function selectMediaSourceDevice(socketId){
-    if(!socketId) return;
-    if(socketId===state.socketId){
-        await activateThisDeviceAsMediaSource(false);
+    if(btn){
+        const allHere=hereVideo&&hereMic&&hereAudio;
+        btn.style.display=allHere?'none':'block';
+        btn.textContent='📱 Usar vídeo + microfone + áudio neste aparelho';
     }
-    if(state.socket?.connected) state.socket.emit('select-media-source',{socketId});
+    applyRoomAudioRouting();
+}
+async function selectMediaRouteDevice(kind,socketId){
+    kind=String(kind||''); if(!['video','mic','audio'].includes(kind) || !socketId) return;
+    const isHere=socketId===state.socketId;
+    // Pré-abre a captura no aparelho escolhido quando a escolha é feita nele.
+    // Assim o aparelho antigo só é desligado depois que o novo já tem permissão.
+    if(isHere && kind==='video'){
+        try{ await ensureLocalMedia(true,false,false); }catch(_){ return; }
+    }
+    if(isHere && kind==='mic'){
+        try{ await ensureLocalMedia(false,true,false); }catch(_){ return; }
+    }
+    if(isHere && kind==='audio') await unlockCallMediaPlayback();
+    if(state.socket?.connected){
+        state.socket.emit('select-media-route',{kind,socketId});
+    }else{
+        state.mediaRouting[state.ownerKey]={...mediaRouteForOwner(state.ownerKey),[kind]:socketId};
+        await applyOwnMediaRouting(kind,false);
+        refreshMediaSourceChooser(); renderVideoLayout();
+    }
 }
 async function claimThisDeviceForMedia(){
-    if(!state.socket?.connected) return activateThisDeviceAsMediaSource(false);
-    await selectMediaSourceDevice(state.socketId);
+    if(!state.socketId) return;
+    try{ await ensureLocalMedia(true,true,false); }catch(_){ /* seleção individual ainda pode funcionar */ }
+    await unlockCallMediaPlayback();
+    if(state.socket?.connected){
+        state.socket.emit('select-media-routing',{video:state.socketId,mic:state.socketId,audio:state.socketId});
+    }else{
+        state.mediaRouting[state.ownerKey]={video:state.socketId,mic:state.socketId,audio:state.socketId};
+        await applyOwnMediaRouting('all',false); refreshMediaSourceChooser();
+    }
+}
+// Wrappers mantidos para compatibilidade com chamadas internas da versão anterior.
+async function disableLocalCallMedia(silent=false){
+    stopLocalMediaKind('video'); stopLocalMediaKind('mic');
+    await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI();
+    if(!silent) showToast('Câmera e microfone desativados neste aparelho.','info');
+}
+async function activateThisDeviceAsMediaSource(silent=false){
+    if(state.socket?.connected) state.socket.emit('select-media-routing',{video:state.socketId,mic:state.socketId});
+    else await applyOwnMediaRouting('all',silent);
 }
 
 function updateLocalMediaUI(){
@@ -1829,25 +1975,33 @@ function updateLocalMediaUI(){
     renderVideoLayout();
 }
 function sendMediaState(){
+    if(state.players[state.socketId]) Object.assign(state.players[state.socketId],{cameraOn:state.isCameraOn,micOn:state.isMicOn,screenSharing:state.isScreenSharing});
     if(state.socket?.connected) state.socket.emit('media-state',{cameraOn:state.isCameraOn,micOn:state.isMicOn,screenSharing:state.isScreenSharing});
+    refreshMediaSourceChooser();
 }
 async function toggleCamera(){
     if(state.isCameraOn){
         const track=state.localStream?.getVideoTracks()[0];
-        replaceLocalTrack('video',null); if(track){try{track.stop();}catch(_){}}
+        replaceLocalTrack('video',null); if(track){try{track.stop();}catch(_){} }
         state.isCameraOn=false; await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI(); showToast('Câmera desligada','info'); return;
     }
-    try{ await ensureLocalMedia(true,false,false); state.isCameraOn=true; await syncLocalTracksToAllPeers(); await ensureSendDirections(); sendMediaState(); updateLocalMediaUI(); showToast('Câmera ligada','success'); }
-    catch(_){}
+    try{
+        await ensureLocalMedia(true,false,false); state.isCameraOn=true;
+        if(state.socket?.connected && state.ownerKey && !isThisDeviceRoute('video')) state.socket.emit('select-media-route',{kind:'video',socketId:state.socketId});
+        await syncLocalTracksToAllPeers(); await ensureSendDirections(); sendMediaState(); updateLocalMediaUI(); showToast('Câmera ligada','success');
+    }catch(_){}
 }
 async function toggleMic(){
     if(state.isMicOn){
         const track=state.localStream?.getAudioTracks()[0];
-        replaceLocalTrack('audio',null); if(track){try{track.stop();}catch(_){}}
+        replaceLocalTrack('audio',null); if(track){try{track.stop();}catch(_){} }
         state.isMicOn=false; await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI(); showToast('Microfone desligado','info'); return;
     }
-    try{ await ensureLocalMedia(false,true,false); state.isMicOn=true; await syncLocalTracksToAllPeers(); await ensureSendDirections(); sendMediaState(); updateLocalMediaUI(); showToast('Microfone ligado','success'); }
-    catch(_){}
+    try{
+        await ensureLocalMedia(false,true,false); state.isMicOn=true;
+        if(state.socket?.connected && state.ownerKey && !isThisDeviceRoute('mic')) state.socket.emit('select-media-route',{kind:'mic',socketId:state.socketId});
+        await syncLocalTracksToAllPeers(); await ensureSendDirections(); sendMediaState(); updateLocalMediaUI(); showToast('Microfone ligado','success');
+    }catch(_){}
 }
 async function toggleScreenShare(){
     const btn=document.getElementById('btnScreen');
@@ -1856,6 +2010,7 @@ async function toggleScreenShare(){
         await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI(); showToast('Compartilhamento parado','info'); return;
     }
     try{
+        if(state.socket?.connected && state.ownerKey && !isThisDeviceRoute('video')) state.socket.emit('select-media-route',{kind:'video',socketId:state.socketId});
         const stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:20,max:30}},audio:false});
         state.screenStream=stream; state.isScreenSharing=true; btn?.classList.add('off');
         await syncLocalTracksToAllPeers(); sendMediaState();
@@ -1866,6 +2021,10 @@ async function toggleScreenShare(){
     }catch(err){ console.warn(err); showToast('Compartilhamento cancelado','info'); }
 }
 function getOutgoingTrack(kind){
+    if(state.socket?.connected && state.ownerKey){
+        if(kind==='video' && !isThisDeviceRoute('video')) return null;
+        if(kind==='audio' && !isThisDeviceRoute('mic')) return null;
+    }
     if(kind==='video' && state.isScreenSharing) return state.screenStream?.getVideoTracks()[0] || null;
     if(kind==='video') return state.isCameraOn ? (state.localStream?.getVideoTracks()[0] || null) : null;
     return state.isMicOn ? (state.localStream?.getAudioTracks()[0] || null) : null;
@@ -2148,7 +2307,8 @@ function endpointTrackCandidate(p,kind){
 function preferredTrackForOwner(ownerKey,kind){
     const endpoints=Object.values(state.players).filter(p=>logicalKeyForPlayer(p)===ownerKey);
     const candidates=endpoints.map(p=>endpointTrackCandidate(p,kind)).filter(Boolean);
-    const selectedId=state.mediaSources?.[ownerKey];
+    const route=mediaRouteForOwner(ownerKey);
+    const selectedId=kind==='video' ? route.video : route.mic;
     if(selectedId){
         const selected=candidates.find(c=>c.p.id===selectedId);
         if(selected) return selected.track;
@@ -2159,16 +2319,11 @@ function preferredTrackForOwner(ownerKey,kind){
 function streamForLogicalPlayer(ownerKey){
     const result=state.logicalStreams[ownerKey] || new MediaStream();
     state.logicalStreams[ownerKey]=result;
-    // O aparelho conectado mais recentemente com mídia ativa se torna a fonte
-    // preferida. Assim, se o computador já está na mesa e o celular entra depois
-    // com o mesmo Nome de Jogador, a câmera/microfone do celular passam a representar
-    // aquele jogador para toda a sala — inclusive no próprio computador.
+    // Vídeo e microfone podem vir de aparelhos diferentes. O próprio jogador
+    // sempre vê seu vídeo nos dois aparelhos, mas nunca reproduz o próprio microfone
+    // de volta para si (evita eco/retorno).
     const videoTrack=preferredTrackForOwner(ownerKey,'video');
-    const selectedSourceId=state.mediaSources?.[ownerKey] || null;
-    const ownSourceIsRemote=ownerKey===state.ownerKey && selectedSourceId && selectedSourceId!==state.socketId;
-    // Só silenciamos o próprio microfone quando a fonte é ESTE aparelho. Se a fonte
-    // escolhida é o celular e esta tela é o computador, o áudio do celular deve chegar.
-    const audioTrack=(ownerKey===state.ownerKey && !ownSourceIsRemote) ? null : preferredTrackForOwner(ownerKey,'audio');
+    const audioTrack=ownerKey===state.ownerKey ? null : preferredTrackForOwner(ownerKey,'audio');
     const desired=[videoTrack,audioTrack].filter(Boolean), desiredIds=new Set(desired.map(t=>t.id));
     result.getTracks().forEach(t=>{ if(!desiredIds.has(t.id)) result.removeTrack(t); });
     desired.forEach(t=>{ if(!result.getTracks().some(x=>x.id===t.id)) result.addTrack(t); });
@@ -2184,9 +2339,12 @@ async function attachLogicalMedia(ownerKey){
     const noCam=isNarrator?document.getElementById('narradorNoCam'):document.getElementById('nocam-owner-'+key);
     if(!video)return;
     const stream=streamForLogicalPlayer(ownerKey), hasVideo=stream.getVideoTracks().some(t=>t.readyState==='live'), hasAudio=stream.getAudioTracks().some(t=>t.readyState==='live');
-    const selectedSourceId=state.mediaSources?.[ownerKey] || null;
-    const sourceIsThisDevice=ownerKey===state.ownerKey && (!selectedSourceId || selectedSourceId===state.socketId);
-    video.srcObject=stream; video.muted = sourceIsThisDevice;
+    const route=mediaRouteForOwner(ownerKey);
+    const sourceIsThisDevice=ownerKey===state.ownerKey && route.video===state.socketId;
+    // O vídeo de todos continua visível nos dois aparelhos. Somente a reprodução
+    // do áudio da sala é roteada para o aparelho escolhido em "🔊 Ouvir".
+    video.srcObject=stream;
+    video.muted = ownerKey===state.ownerKey || !shouldReceiveRoomAudioHere();
     let mirrorSelf=false;
     if(sourceIsThisDevice && !state.isScreenSharing){
         try{

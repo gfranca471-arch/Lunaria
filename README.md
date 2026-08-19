@@ -285,6 +285,20 @@ A autorização continua vinculada à campanha e ocorre apenas na primeira cria�
 
 ---
 
+## V22.2 — dois aparelhos: vídeo, microfone e áudio independentes
+
+Mantém todos os recursos da V21.9 e a estabilidade WebRTC/Northflank da V22.1. A mudança desta versão é somente a forma como um mesmo jogador usa dois aparelhos.
+
+- Na aba **Sala**, quando o mesmo Nome de Jogador está conectado em dois aparelhos, cada aparelho mostra três escolhas independentes: **📹 Vídeo**, **🎤 Mic** e **🔊 Ouvir**.
+- É possível, por exemplo, usar câmera e microfone do celular e ouvir toda a chamada no próprio celular, mantendo o computador apenas como segunda tela.
+- Vídeo e microfone podem inclusive ficar em aparelhos diferentes.
+- O aparelho escolhido em **🔊 Ouvir** recebe o áudio dos demais jogadores e os áudios compartilhados da sala; o outro aparelho permanece silencioso para evitar eco.
+- O próprio vídeo continua visível nos dois aparelhos conectados. O próprio microfone nunca é reproduzido de volta para o jogador.
+- Entrar com um segundo aparelho não rouba automaticamente câmera/microfone do primeiro. A seleção fica explícita na aba Sala.
+- Se o aparelho escolhido desconectar, as três funções são transferidas automaticamente para outro aparelho do mesmo jogador.
+- Ligar a câmera ou o microfone pelos botões do próprio aparelho faz esse aparelho assumir somente aquela função.
+- Sem LiveKit, Cloudflare Realtime ou outro serviço externo: continua WebRTC P2P com sinalização Socket.IO pelo Northflank.
+
 ## V22.1 — WebRTC estável para Northflank
 
 Esta versão mantém integralmente os recursos da V21.9 e altera somente a infraestrutura de comunicação e pequenos parâmetros de mídia.

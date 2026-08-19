@@ -250,6 +250,7 @@ function normalizeRoom(room, code) {
     room.profiles = room.profiles && typeof room.profiles === 'object' ? room.profiles : {};
     room.players = room.players && typeof room.players === 'object' ? room.players : {};
     room.mediaSources = room.mediaSources && typeof room.mediaSources === 'object' ? room.mediaSources : {};
+    room.mediaRouting = room.mediaRouting && typeof room.mediaRouting === 'object' ? room.mediaRouting : {};
     // Ordem lógica dos cards de jogadores. Usa ownerKey (não socket.id), portanto
     // permanece estável mesmo quando o jogador fecha a mesa ou troca de aparelho.
     room.cameraOrder = Array.isArray(room.cameraOrder)
@@ -266,6 +267,7 @@ function persistableRoom(room) {
     const copy = { ...room };
     delete copy.players;
     delete copy.mediaSources;
+    delete copy.mediaRouting;
     delete copy.code;
     return copy;
 }
@@ -740,6 +742,7 @@ app.post('/api/room-image/from-url',async(req,res)=>{
 app.get('/health', (req, res) => {
     res.status(200).json({
         ok: true,
+        version: '22.2',
         index: fs.existsSync(INDEX_FILE),
         mesa: fs.existsSync(TABLE_FILE),
         storage: storageMode,
@@ -923,12 +926,26 @@ io.on('connection', (socket) => {
                 cameraOn: Boolean(data.cameraOn), micOn: Boolean(data.micOn), screenSharing: false,
                 deviceIndex: alreadyOnline.length + 1, joinedAt: Date.now()
             };
-            // O aparelho mais recente assume câmera/microfone quando ele realmente
-            // conseguiu abrir alguma mídia. Se o navegador móvel ainda estiver aguardando
-            // permissão, preservamos a fonte anterior para não derrubar uma chamada ativa.
-            // O usuário pode assumir a mídia manualmente depois pelo botão da aba Sala.
-            const autoClaimMedia = !alreadyOnline.length || Boolean(data.cameraOn || data.micOn);
-            if (autoClaimMedia || !room.mediaSources[ownerKey]) room.mediaSources[ownerKey] = socket.id;
+            // V22.2: câmera, microfone e saída de áudio são escolhidos separadamente.
+            // O primeiro aparelho assume as três funções. Ao entrar um segundo aparelho,
+            // preservamos as escolhas atuais em vez de trocar automaticamente para o
+            // dispositivo mais recente. Isso evita que PC/celular mudem de função sozinhos.
+            room.mediaRouting ||= {};
+            const existingRoute = room.mediaRouting[ownerKey] && typeof room.mediaRouting[ownerKey] === 'object'
+                ? { ...room.mediaRouting[ownerKey] }
+                : {};
+            const validOwnSocket = id => Boolean(id && room.players[id]?.ownerKey === ownerKey);
+            const legacySource = validOwnSocket(room.mediaSources?.[ownerKey]) ? room.mediaSources[ownerKey] : null;
+            const fallbackOwn = alreadyOnline[0]?.id || socket.id;
+            const route = {
+                video: validOwnSocket(existingRoute.video) ? existingRoute.video : (legacySource || fallbackOwn),
+                mic: validOwnSocket(existingRoute.mic) ? existingRoute.mic : (legacySource || fallbackOwn),
+                audio: validOwnSocket(existingRoute.audio) ? existingRoute.audio : fallbackOwn
+            };
+            room.mediaRouting[ownerKey] = route;
+            // Mantido apenas para compatibilidade com clientes antigos: representa a
+            // fonte de vídeo preferida quando há uma única noção de "fonte de mídia".
+            room.mediaSources[ownerKey] = route.video;
             schedulePersistRoom(code, 300);
 
             socket.emit('room-joined', {
@@ -940,6 +957,7 @@ io.on('connection', (socket) => {
                 players: room.players,
                 logicalPlayerCount: logicalPlayerCount(room),
                 mediaSources: room.mediaSources,
+                mediaRouting: room.mediaRouting,
                 cameraOrder: room.cameraOrder,
                 cameraNumberHidden: room.cameraNumberHidden,
                 gridConfig: room.gridConfig,
@@ -959,7 +977,10 @@ io.on('connection', (socket) => {
             socket.to(code).emit('user-joined', { ...room.players[socket.id], samePlayer: alreadyOnline.length > 0 });
             io.to(code).emit('camera-order-changed', { cameraOrder: room.cameraOrder });
             io.to(code).emit('camera-number-visibility-changed', { cameraNumberHidden: room.cameraNumberHidden });
-            io.to(code).emit('media-source-selected', { ownerKey, socketId:room.mediaSources[ownerKey], name, automatic:true, deviceCount:alreadyOnline.length+1 });
+            io.to(code).emit('media-routing-updated', {
+                ownerKey, routing:{...room.mediaRouting[ownerKey]}, name,
+                automatic:true, deviceCount:alreadyOnline.length+1, changedKind:'join'
+            });
             console.log(`👤 ${name} (${effectiveRole}) entrou em ${code}${alreadyOnline.length ? ' em outro aparelho' : ''}`);
         } catch (err) {
             console.error('join-room:', err);
@@ -1325,32 +1346,117 @@ io.on('connection', (socket) => {
         schedulePersistRoom(code);
         io.to(code).emit('char-image-changed', { ownerKey:key, url:data.url });
     });
-    function selectMediaSourceForOwner(ownerKey, targetSocketId, automatic=false) {
+    function validMediaRouteKind(kind) {
+        return ['video','mic','audio'].includes(String(kind||'')) ? String(kind) : '';
+    }
+    function mediaRoutingForOwner(room, ownerKey) {
+        room.mediaRouting ||= {};
+        const endpoints = roomOwnerEndpoints(room, ownerKey);
+        const fallback = endpoints[0]?.id || '';
+        const current = room.mediaRouting[ownerKey] && typeof room.mediaRouting[ownerKey] === 'object'
+            ? room.mediaRouting[ownerKey]
+            : {};
+        const valid = id => Boolean(id && room.players[id]?.ownerKey === ownerKey);
+        const legacy = valid(room.mediaSources?.[ownerKey]) ? room.mediaSources[ownerKey] : '';
+        const route = {
+            video: valid(current.video) ? current.video : (legacy || fallback),
+            mic: valid(current.mic) ? current.mic : (legacy || fallback),
+            audio: valid(current.audio) ? current.audio : fallback
+        };
+        room.mediaRouting[ownerKey] = route;
+        if(route.video) room.mediaSources[ownerKey] = route.video;
+        return route;
+    }
+    function emitMediaRouting(room, ownerKey, options={}) {
+        const code = socket.data.roomCode;
+        const route = mediaRoutingForOwner(room, ownerKey);
+        const endpoints = roomOwnerEndpoints(room, ownerKey);
+        io.to(code).emit('media-routing-updated', {
+            ownerKey,
+            routing:{...route},
+            name:endpoints[0]?.name || socket.data.playerName,
+            automatic:Boolean(options.automatic),
+            deviceCount:endpoints.length,
+            changedKind:options.changedKind || '',
+            previousSocketId:options.previousSocketId || ''
+        });
+    }
+    function selectMediaRouteForOwner(ownerKey, kind, targetSocketId, automatic=false) {
         const code = socket.data.roomCode;
         const room = rooms[code];
-        if (!room || !ownerKey || !targetSocketId) return false;
+        kind = validMediaRouteKind(kind);
+        if (!room || !ownerKey || !kind || !targetSocketId) return false;
         const target = room.players[targetSocketId];
         if (!target || target.ownerKey !== ownerKey) return false;
-        room.mediaSources ||= {};
-        room.mediaSources[ownerKey] = targetSocketId;
-        io.to(code).emit('media-source-selected', {
-            ownerKey, socketId:targetSocketId, name:target.name || socket.data.playerName,
-            automatic, deviceCount:roomOwnerEndpoints(room, ownerKey).length
-        });
+        const route = mediaRoutingForOwner(room, ownerKey);
+        const previousSocketId = route[kind] || '';
+        route[kind] = targetSocketId;
+        room.mediaRouting[ownerKey] = route;
+        if(kind==='video') room.mediaSources[ownerKey] = targetSocketId;
+        emitMediaRouting(room, ownerKey, {automatic,changedKind:kind,previousSocketId});
         return true;
     }
+    function selectMediaRoutingBundle(ownerKey, requested, automatic=false) {
+        const code = socket.data.roomCode;
+        const room = rooms[code];
+        if(!room || !ownerKey || !requested || typeof requested!=='object') return false;
+        const route = mediaRoutingForOwner(room, ownerKey);
+        let changed=false;
+        for(const kind of ['video','mic','audio']){
+            const id=String(requested[kind]||'');
+            if(!id) continue;
+            const target=room.players[id];
+            if(!target || target.ownerKey!==ownerKey) continue;
+            if(route[kind]!==id){ route[kind]=id; changed=true; }
+        }
+        if(!changed) return true;
+        room.mediaRouting[ownerKey]=route;
+        if(route.video) room.mediaSources[ownerKey]=route.video;
+        emitMediaRouting(room, ownerKey, {automatic,changedKind:'all'});
+        return true;
+    }
+    // Compatibilidade com clientes V22.1: selecionar "fonte de mídia" ainda move
+    // câmera e microfone juntos, mas não altera onde o jogador escuta a chamada.
     socket.on('claim-media-source', () => {
         const code = socket.data.roomCode;
         const room = rooms[code];
         if (!room || !room.players[socket.id]) return;
-        selectMediaSourceForOwner(socket.data.ownerKey, socket.id, false);
+        selectMediaRoutingBundle(socket.data.ownerKey, {video:socket.id,mic:socket.id}, false);
     });
     socket.on('select-media-source', (data) => {
         const code = socket.data.roomCode;
         const room = rooms[code];
         if (!room || !room.players[socket.id]) return;
-        // O usuário só pode escolher entre endpoints pertencentes ao mesmo jogador.
-        selectMediaSourceForOwner(socket.data.ownerKey, String(data?.socketId || ''), false);
+        const targetId=String(data?.socketId||'');
+        selectMediaRoutingBundle(socket.data.ownerKey, {video:targetId,mic:targetId}, false);
+    });
+    socket.on('select-media-route', (data) => {
+        const code = socket.data.roomCode;
+        const room = rooms[code];
+        if (!room || !room.players[socket.id]) return;
+        selectMediaRouteForOwner(socket.data.ownerKey, data?.kind, String(data?.socketId||''), false);
+    });
+    socket.on('select-media-routing', (data) => {
+        const code = socket.data.roomCode;
+        const room = rooms[code];
+        if (!room || !room.players[socket.id]) return;
+        selectMediaRoutingBundle(socket.data.ownerKey, data || {}, false);
+    });
+    socket.on('media-route-activation-failed', (data) => {
+        const code = socket.data.roomCode;
+        const room = rooms[code];
+        const ownerKey=socket.data.ownerKey;
+        const kind=validMediaRouteKind(data?.kind);
+        if(!room || !ownerKey || !kind) return;
+        const route=mediaRoutingForOwner(room,ownerKey);
+        if(route[kind]!==socket.id) return;
+        const previous=String(data?.previousSocketId||'');
+        const prevPlayer=room.players[previous];
+        const fallback=(prevPlayer?.ownerKey===ownerKey ? previous : roomOwnerEndpoints(room,ownerKey).find(p=>p.id!==socket.id)?.id) || socket.id;
+        const failedSocket=route[kind];
+        route[kind]=fallback;
+        if(kind==='video') room.mediaSources[ownerKey]=fallback;
+        emitMediaRouting(room,ownerKey,{automatic:true,changedKind:kind,previousSocketId:failedSocket});
     });
 
     socket.on('media-state', (data) => {
@@ -1395,12 +1501,19 @@ io.on('connection', (socket) => {
             delete room.players[socket.id];
             const remaining = roomOwnerEndpoints(room, leaving.ownerKey);
             const ownerStillOnline = remaining.length > 0;
-            if(room.mediaSources?.[leaving.ownerKey] === socket.id){
-                if(ownerStillOnline){
-                    const fallback=[...remaining].sort((a,b)=>(b.joinedAt||0)-(a.joinedAt||0))[0];
-                    room.mediaSources[leaving.ownerKey]=fallback.id;
-                    io.to(code).emit('media-source-selected',{ownerKey:leaving.ownerKey,socketId:fallback.id,name:fallback.name,automatic:true,deviceCount:remaining.length});
-                } else delete room.mediaSources[leaving.ownerKey];
+            if(ownerStillOnline){
+                const fallback=[...remaining].sort((a,b)=>(a.deviceIndex||0)-(b.deviceIndex||0))[0];
+                const route=mediaRoutingForOwner(room,leaving.ownerKey);
+                let changed=false;
+                for(const kind of ['video','mic','audio']){
+                    if(route[kind]===socket.id || !room.players[route[kind]]){ route[kind]=fallback.id; changed=true; }
+                }
+                room.mediaRouting[leaving.ownerKey]=route;
+                room.mediaSources[leaving.ownerKey]=route.video || fallback.id;
+                emitMediaRouting(room,leaving.ownerKey,{automatic:true,changedKind:'disconnect',previousSocketId:socket.id});
+            } else {
+                delete room.mediaSources[leaving.ownerKey];
+                delete room.mediaRouting?.[leaving.ownerKey];
             }
             io.to(code).emit('user-left', { id:socket.id, ownerKey:leaving.ownerKey, name:leaving.name, ownerStillOnline });
         }
