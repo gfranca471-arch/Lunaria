@@ -1,0 +1,18 @@
+MESA RPG ONLINE V22.1 — NORTHFLANK / WEBRTC P2P ESTÁVEL
+
+Base: V21.9 (mapa, objetos, efeitos, fichas, dados, salas e demais recursos preservados).
+
+Mudanças focadas apenas em câmera/áudio e estabilidade:
+1. Socket.IO local do próprio servidor em vez de CDN.
+2. Polling -> WebSocket para atravessar o proxy do Northflank com mais tolerância.
+3. Reconexão automática do Socket.IO sem criar falso jogador local.
+4. Limpeza de peers antigos quando o socket.id muda.
+5. Handshake webrtc-ready para sincronizar a entrada dos aparelhos.
+6. ACK de oferta/resposta WebRTC para detectar alvo que reconectou.
+7. Watchdog de conexão, ICE restart e recriação do peer se necessário.
+8. STUN Google ampliado para quatro endpoints; TURN segue opcional.
+9. Vídeo mais leve (360p/240p conforme número de participantes) e áudio priorizado.
+10. Suporte a múltiplos aparelhos do mesmo jogador mantido.
+11. Dockerfile incluído para Northflank.
+
+Nenhum serviço externo de videoconferência foi adicionado.
