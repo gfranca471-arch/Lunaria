@@ -1157,7 +1157,7 @@ const state = {
     socket: null, socketId: null,
     players: {},
     localStream: null, screenStream: null,
-    peerConnections: {}, remoteStreams: {}, logicalStreams:{}, mediaSources:{}, cameraOrder:[], cameraNumberHidden:[], pendingIce: {}, peerReconnectTimers: {}, peerHealthTimer:null, peerStatsTimer:null,
+    peerConnections: {}, remoteStreams: {}, logicalStreams:{}, mediaSources:{}, cameraOrder:[], cameraNumberHidden:[], pendingIce: {}, peerReconnectTimers: {}, peerHealthTimer:null, peerStatsTimer:null, callReady:false, peerRestartAt:{},
     isCameraOn: false, isMicOn: false, isScreenSharing: false,
     musicTracks: [], currentTrack: null, isLooping: true, sfxTracks:[], sfxState:{trackId:null,playing:false,loop:false},
     sheets: {},
@@ -1367,6 +1367,11 @@ function initSocket() {
     state.socket = socketFactory(serverUrl, { transports:['websocket','polling'], upgrade:true, timeout:12000 });
 
     state.socket.on('connect', () => {
+        // Uma reconexão Socket.IO recebe um novo socket.id: descarta a malha antiga
+        // antes de entrar de novo para não reaproveitar PeerConnections vinculadas
+        // a endpoints que já não existem no servidor.
+        state.callReady=false;
+        Object.keys(state.peerConnections).forEach(id=>closePeerConnection(id));
         state.socketId = state.socket.id;
         // Primeiro entra na sala. O servidor informa qual aparelho deste jogador é
         // a fonte WebRTC; somente esse aparelho abrirá câmera/microfone.
@@ -1403,6 +1408,12 @@ function initSocket() {
         } else {
             await disableLocalCallMedia(true);
         }
+        // A negociação WebRTC só começa depois que este navegador terminou de
+        // abrir (ou tentar abrir) câmera/microfone. Isso elimina a conexão unilateral
+        // causada por uma oferta chegar enquanto o outro lado ainda aguardava permissão.
+        state.callReady=true;
+        if(state.players[state.socketId]) state.players[state.socketId].webrtcReady=true;
+        state.socket.emit('webrtc-ready');
         const myEndpoint=state.players[state.socketId];
         if(myEndpoint){ state.role=myEndpoint.role||state.role; state.myColor=myEndpoint.color||state.myColor; state.myChatColor=myEndpoint.chatColor||state.myChatColor; state.myCharImage=myEndpoint.charImage||state.myCharImage; }
         if (data.system) state.system = data.system;
@@ -1437,14 +1448,13 @@ function initSocket() {
         startPeerHealthMonitor();
         sendMediaState();
         addChatMessage('Sistema', `🎉 Bem-vindo à campanha ${state.campaignName || 'RPG'}!`, 'system');
-        // Normalmente quem já estava na sala cria a oferta. Como proteção contra
-        // redes/aparelhos móveis que perdem esse evento, o recém-chegado tenta
-        // conectar aos endpoints ainda sem PeerConnection após um pequeno atraso.
+        // Forma a malha apenas com endpoints que já sinalizaram prontidão. Cada par
+        // é full-duplex: ambos podem enviar e receber; só o segundo aparelho do MESMO
+        // jogador fica sem tracks de saída.
         setTimeout(() => {
-            Object.keys(state.players).forEach(id => {
-                if (id !== state.socketId && !state.peerConnections[id] && shouldInitiatePeer(id)) createPeerOffer(id).catch(()=>{});
-            });
-        }, 1400);
+            Object.keys(state.players).forEach(id => maybeConnectPeer(id,0,false));
+            ensurePeerMesh();
+        }, 500);
         refreshMediaDeviceSelectors().catch(()=>{});
         refreshMediaSourceChooser();
     });
@@ -1455,7 +1465,9 @@ function initSocket() {
         if (user.samePlayer) addChatMessage('Sistema', `📱 ${user.name} conectou outro aparelho.`, 'system');
         else addChatMessage('Sistema', `👤 ${user.name} entrou na sala.`, 'system');
         if(!user.samePlayer) showToast(`${user.name} entrou`, 'info');
-        if(shouldInitiatePeer(user.id)) setTimeout(() => createPeerOffer(user.id).catch(()=>{}), 120);
+        // Não cria SDP antes de o outro navegador terminar a inicialização de mídia.
+        // O evento webrtc-peer-ready inicia a malha quando os dois lados estão prontos.
+        if(user.webrtcReady===true) maybeConnectPeer(user.id,180,false);
         setTimeout(ensurePeerMesh,450);
         refreshMediaSourceChooser();
     });
@@ -1465,6 +1477,7 @@ function initSocket() {
         const userId=info.id;
         const name = info.name || state.players[userId]?.name || 'Alguém';
         delete state.players[userId];
+        delete state.peerRestartAt[userId];
         closePeerConnection(userId);
         if(!info.ownerStillOnline && info.ownerKey) delete state.logicalStreams[info.ownerKey];
         renderVideoLayout();
@@ -1597,10 +1610,25 @@ function initSocket() {
         const p=state.players[data.id]; if(p) setTimeout(()=>attachLogicalMedia(logicalKeyForPlayer(p)),60);
     });
 
+    state.socket.on('webrtc-peer-ready', data => {
+        const id=data?.id;
+        if(!id || id===state.socketId) return;
+        if(state.players[id]) state.players[id].webrtcReady=true;
+        maybeConnectPeer(id,120,false);
+        setTimeout(ensurePeerMesh,260);
+    });
+    state.socket.on('webrtc-reset-request', data => {
+        const id=data?.from;
+        if(!id || id===state.socketId) return;
+        closePeerConnection(id);
+        if(state.players[id]) state.players[id].webrtcReady=true;
+        if(shouldInitiatePeer(id)) maybeConnectPeer(id,180,true);
+    });
+
     state.socket.on('webrtc-offer', async (data) => { await handleWebRTCOffer(data.from, data.offer); });
     state.socket.on('webrtc-answer', async (data) => { await handleWebRTCAnswer(data.from, data.answer); });
     state.socket.on('webrtc-ice', async (data) => { await handleWebRTCIce(data.from, data.candidate); });
-    state.socket.on('webrtc-reconnect-request', async data => { if(shouldInitiatePeer(data.from)){ closePeerConnection(data.from); setTimeout(()=>createPeerOffer(data.from,true).catch(()=>{}),120); } });
+    state.socket.on('webrtc-reconnect-request', async data => { if(shouldInitiatePeer(data.from)){ closePeerConnection(data.from); maybeConnectPeer(data.from,160,true); } });
 }
 
 // ═══════════════════════════════════════════════════
@@ -1753,7 +1781,7 @@ async function changeMicrophoneDevice(deviceId){
         const track=stream.getAudioTracks()[0]; if(!track)return;
         try{track.contentHint='speech';}catch(_){}
         replaceLocalTrack('audio',track); state.isMicOn=true;
-        await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI();
+        await syncLocalTracksToAllPeers(); await hardRestartAllPeerPairs('microphone-device'); sendMediaState(); updateLocalMediaUI();
         showToast('Microfone alterado.','success');
     }catch(err){ console.warn(err); showToast('Não foi possível usar esse microfone.','error'); }
 }
@@ -1766,7 +1794,7 @@ async function changeCameraDevice(deviceId){
         const stream=await navigator.mediaDevices.getUserMedia({video:mediaConstraints(true,false).video,audio:false});
         const track=stream.getVideoTracks()[0]; if(!track)return;
         replaceLocalTrack('video',track); state.isCameraOn=true;
-        await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI();
+        await syncLocalTracksToAllPeers(); await hardRestartAllPeerPairs('camera-device'); sendMediaState(); updateLocalMediaUI();
         showToast('Câmera alterada.','success');
     }catch(err){ console.warn(err); showToast('Não foi possível usar essa câmera.','error'); }
 }
@@ -1777,8 +1805,14 @@ async function applyAudioSinkToAll(){ return true; }
 function selectedMediaSourceId(){ return state.ownerKey ? (state.mediaSources?.[state.ownerKey] || null) : null; }
 function isThisDeviceMediaSource(){
     if(!state.socket?.connected) return true;
+    // Com um único aparelho conectado, ele SEMPRE é a fonte da chamada. A seleção
+    // de fonte só limita a publicação quando o mesmo jogador realmente usa 2+ aparelhos.
+    // Isso evita que um estado de source ainda não sincronizado transforme um jogador
+    // comum em receptor-only e garante comportamento de Meet/Classroom entre jogadores.
+    const own=ownDeviceEndpoints();
+    if(own.length<=1) return true;
     const selected=selectedMediaSourceId();
-    return Boolean(selected && selected===state.socketId);
+    return !selected || selected===state.socketId;
 }
 function ownDeviceEndpoints(){
     if(!state.ownerKey) return [];
@@ -1823,9 +1857,9 @@ async function activateThisDeviceAsMediaSource(silent=false){
         state.isMicOn=Boolean(state.localStream?.getAudioTracks().find(t=>t.readyState==='live'));
         if(!state.isCameraOn && !state.isMicOn) throw new Error('Nenhuma entrada de chamada disponível.');
         await syncLocalTracksToAllPeers(); await ensureSendDirections();
-        // Se os peers foram negociados quando este aparelho ainda era somente receptor,
-        // republica os m-lines agora que ele é a fonte ativa.
-        await renegotiateAllPeersForLocalPublish(false);
+        // Ao assumir a fonte, recria os pares que já existiam. A conexão nova nasce
+        // com áudio/vídeo de saída presentes no SDP e evita o estado unilateral.
+        if(state.callReady) await hardRestartAllPeerPairs('source-activated');
         sendMediaState(); updateLocalMediaUI();
         refreshMediaDeviceSelectors().catch(()=>{});
         if(!silent) showToast('Este aparelho agora envia sua câmera e microfone.','success');
@@ -1858,7 +1892,7 @@ async function selectMediaSourceDevice(socketId){
     }
 
     if(socketId===state.socketId){
-        await syncLocalTracksToAllPeers(); await ensureSendDirections(); await renegotiateAllPeersForLocalPublish(false); sendMediaState(); updateLocalMediaUI();
+        await syncLocalTracksToAllPeers(); await ensureSendDirections(); await hardRestartAllPeerPairs('source-selected'); sendMediaState(); updateLocalMediaUI();
         showToast('Este aparelho agora envia sua câmera e microfone.','success');
     }else if(previous===state.socketId){
         await disableLocalCallMedia(true);
@@ -1893,7 +1927,7 @@ async function toggleCamera(){
         replaceLocalTrack('video',null); if(track){try{track.stop();}catch(_){}}
         state.isCameraOn=false; await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI(); showToast('Câmera desligada','info'); return;
     }
-    try{ await ensureLocalMedia(true,false,false); state.isCameraOn=true; await syncLocalTracksToAllPeers(); await ensureSendDirections(); await renegotiateAllPeersForLocalPublish(false); sendMediaState(); updateLocalMediaUI(); showToast('Câmera ligada','success'); }
+    try{ await ensureLocalMedia(true,false,false); state.isCameraOn=true; await syncLocalTracksToAllPeers(); await ensureSendDirections(); await hardRestartAllPeerPairs('camera-on'); sendMediaState(); updateLocalMediaUI(); showToast('Câmera ligada','success'); }
     catch(_){}
 }
 async function toggleMic(){
@@ -1903,7 +1937,7 @@ async function toggleMic(){
         replaceLocalTrack('audio',null); if(track){try{track.stop();}catch(_){}}
         state.isMicOn=false; await syncLocalTracksToAllPeers(); sendMediaState(); updateLocalMediaUI(); showToast('Microfone desligado','info'); return;
     }
-    try{ await ensureLocalMedia(false,true,false); state.isMicOn=true; await syncLocalTracksToAllPeers(); await ensureSendDirections(); await renegotiateAllPeersForLocalPublish(false); sendMediaState(); updateLocalMediaUI(); showToast('Microfone ligado','success'); }
+    try{ await ensureLocalMedia(false,true,false); state.isMicOn=true; await syncLocalTracksToAllPeers(); await ensureSendDirections(); await hardRestartAllPeerPairs('mic-on'); sendMediaState(); updateLocalMediaUI(); showToast('Microfone ligado','success'); }
     catch(_){}
 }
 async function toggleScreenShare(){
@@ -1916,7 +1950,7 @@ async function toggleScreenShare(){
     try{
         const stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:20,max:30}},audio:false});
         state.screenStream=stream; state.isScreenSharing=true; btn?.classList.add('off');
-        await syncLocalTracksToAllPeers(); await renegotiateAllPeersForLocalPublish(false); sendMediaState();
+        await syncLocalTracksToAllPeers(); await hardRestartAllPeerPairs('screen-share'); sendMediaState();
         const preview=state.role==='narrador'?document.getElementById('narradorCam'):document.getElementById('video-'+state.socketId);
         if(preview){preview.srcObject=stream;preview.muted=true;preview.style.display='block';tryPlayMedia(preview);}
         stream.getVideoTracks()[0].onended=()=>{ if(state.isScreenSharing) toggleScreenShare(); };
@@ -2055,7 +2089,7 @@ function createPeerConnection(targetId,initiator=false){
     return pc;
 }
 async function createPeerOffer(targetId,iceRestart=false){
-    if(!state.socket?.connected || targetId===state.socketId || !shouldInitiatePeer(targetId)) return;
+    if(!state.socket?.connected || targetId===state.socketId || !shouldInitiatePeer(targetId) || !peerReadyForCall(targetId)) return;
     let pc=state.peerConnections[targetId];
     if(!pc || pc.signalingState==='closed'){
         pc=createPeerConnection(targetId,true); state.peerConnections[targetId]=pc;
@@ -2093,10 +2127,38 @@ async function flushPendingIce(id){
     const pc=state.peerConnections[id], queue=state.pendingIce[id]||[]; if(!pc?.remoteDescription) return;
     delete state.pendingIce[id]; for(const c of queue){try{await pc.addIceCandidate(c);}catch(_){}}
 }
+function peerReadyForCall(id){
+    if(!state.callReady || !id || id===state.socketId) return false;
+    const p=state.players[id];
+    return Boolean(p && p.webrtcReady===true);
+}
+function maybeConnectPeer(id,delay=0,iceRestart=false){
+    if(!peerReadyForCall(id) || !shouldInitiatePeer(id)) return;
+    setTimeout(()=>{
+        if(!peerReadyForCall(id)) return;
+        const pc=state.peerConnections[id];
+        if(!pc || pc.signalingState==='closed' || pc.connectionState==='failed') createPeerOffer(id,iceRestart).catch(()=>{});
+    },Math.max(0,Number(delay)||0));
+}
+async function hardRestartPeerPair(id,reason='media-change'){
+    if(!state.socket?.connected || !peerReadyForCall(id)) return;
+    const now=Date.now(), last=Number(state.peerRestartAt[id]||0);
+    if(now-last<650) return;
+    state.peerRestartAt[id]=now;
+    closePeerConnection(id);
+    // Ambos os lados apagam a conexão antiga. Depois, somente o iniciador
+    // determinístico cria uma conexão nova, já com os tracks locais definitivos.
+    state.socket.emit('webrtc-reset-request',{target:id,reason});
+    if(shouldInitiatePeer(id)) maybeConnectPeer(id,220,true);
+}
+async function hardRestartAllPeerPairs(reason='media-change'){
+    const ids=Object.keys(state.players).filter(id=>id!==state.socketId && peerReadyForCall(id));
+    for(const id of ids) await hardRestartPeerPair(id,reason);
+}
 function ensurePeerMesh(){
-    if(!state.socket?.connected) return;
+    if(!state.socket?.connected || !state.callReady) return;
     for(const id of Object.keys(state.players)){
-        if(id===state.socketId) continue;
+        if(id===state.socketId || !peerReadyForCall(id)) continue;
         const pc=state.peerConnections[id];
         // Não reinicia apenas por 'disconnected': esse estado pode se recuperar sozinho.
         // Os handlers da conexão têm um timer próprio antes de pedir ICE restart.

@@ -1,4 +1,4 @@
-# Deploy no Northflank — Mesa RPG Online V22.1
+# Deploy no Northflank — Mesa RPG Online V22.2
 
 ## 1. Serviço
 

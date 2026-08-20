@@ -935,6 +935,7 @@ io.on('connection', (socket) => {
                 id: socket.id, ownerKey, name, role: effectiveRole, system: room.system,
                 color: profile.color, chatColor:profile.chatColor, charImage: profile.charImage,
                 cameraOn: Boolean(data.cameraOn), micOn: Boolean(data.micOn), screenSharing: false,
+                webrtcReady: false,
                 deviceLabel: cleanLabel(data.deviceLabel || '', 40),
                 deviceIndex: nextDeviceIndex, joinedAt: Date.now()
             };
@@ -1413,6 +1414,17 @@ io.on('connection', (socket) => {
         socket.to(code).emit('media-state', { id:socket.id, cameraOn:player.cameraOn, micOn:player.micOn, screenSharing:player.screenSharing });
     });
 
+    // O cliente só inicia a malha depois de terminar a inicialização local de mídia.
+    // Mesmo sem permissão de câmera/mic ele fica "ready", pois ainda deve receber a chamada.
+    socket.on('webrtc-ready', () => {
+        const code=socket.data.roomCode;
+        const room=rooms[code];
+        const player=room?.players?.[socket.id];
+        if(!player) return;
+        player.webrtcReady=true;
+        socket.to(code).emit('webrtc-peer-ready',{id:socket.id});
+    });
+
     // WebRTC signaling fica somente entre membros da mesma sala.
     function relayRtc(event, data) {
         const code = socket.data.roomCode;
@@ -1424,6 +1436,7 @@ io.on('connection', (socket) => {
     socket.on('webrtc-answer', data => relayRtc('webrtc-answer', { target:data.target, payload:{ answer:data.answer } }));
     socket.on('webrtc-ice', data => relayRtc('webrtc-ice', { target:data.target, payload:{ candidate:data.candidate } }));
     socket.on('webrtc-reconnect-request', data => relayRtc('webrtc-reconnect-request', { target:data.target, payload:{} }));
+    socket.on('webrtc-reset-request', data => relayRtc('webrtc-reset-request', { target:data.target, payload:{reason:String(data?.reason||'media-change').slice(0,40)} }));
 
     socket.on('disconnect', () => {
         const code = socket.data.roomCode;

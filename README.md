@@ -1,4 +1,4 @@
-# Mesa RPG Online — V22.1 Northflank
+# Mesa RPG Online — V22.2 Northflank
 
 Versão preparada para **Northflank via Dockerfile**, com foco em estabilidade do chat de voz/vídeo e uso de dois aparelhos pelo mesmo jogador.
 
@@ -18,7 +18,7 @@ Quando computador e celular entram com o mesmo Nome de Jogador na mesma campanha
 
 A restrição é aplicada em duas camadas: o cliente WebRTC não envia tracks no aparelho passivo e o servidor rejeita estado de câmera/microfone/tela vindo de um endpoint que não seja a fonte selecionada.
 
-### Correção V22.1 — publicação de áudio/vídeo
+### Correção V22.2 — publicação de áudio/vídeo
 
 - ao ativar ou trocar o aparelho de voz/vídeo, os tracks locais são recolocados nos `RTCRtpSender`;
 - a conexão é renegociada para garantir que o aparelho ativo saia de recepção para envio real;
@@ -349,3 +349,7 @@ A autorização continua vinculada à campanha e ocorre apenas na primeira cria�
 - O arrasto do cenário só é ativado acima de 100%; em 100% ou menos ele permanece centralizado. Quando ampliado, o pan é limitado às bordas válidas.
 - Ao carregar um novo cenário, zoom e posição são reiniciados para 100%/centro. Redimensionar a janela recalcula os limites.
 - Mantidas as correções e recursos da V21.8, sem alteração na sinalização WebRTC/câmera/áudio.
+
+## V22.2 — chamada full-duplex
+
+A malha WebRTC agora espera cada navegador concluir a inicialização local antes de criar o SDP do par. Entre jogadores diferentes, cada conexão é sempre bidirecional: ambos enviam e recebem áudio/vídeo. A regra de fonte única só se aplica quando o mesmo jogador entra com dois ou mais aparelhos; nesse caso, apenas o aparelho selecionado publica câmera/microfone e os demais continuam recebendo a chamada. Ao trocar a fonte, câmera, microfone ou dispositivo de captura, os pares afetados são recriados para evitar conexões unilaterais.

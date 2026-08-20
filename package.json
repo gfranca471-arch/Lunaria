@@ -1,7 +1,7 @@
 {
   "name": "mesa-rpg-online",
-  "version": "2.2.1",
-  "description": "Mesa RPG Online V22.1 preparada para Northflank com Dockerfile e chamada WebRTC multidispositivo com fonte única por jogador",
+  "version": "2.2.2",
+  "description": "Mesa RPG Online V22.2 para Northflank com videochamada WebRTC full-duplex e fonte única por jogador em múltiplos aparelhos",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
