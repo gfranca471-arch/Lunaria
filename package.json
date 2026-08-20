@@ -1,0 +1,30 @@
+{
+  "name": "mesa-rpg-online",
+  "version": "2.2.1",
+  "description": "Mesa RPG Online V22.1 preparada para Northflank com Dockerfile e chamada WebRTC multidispositivo com fonte única por jogador",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "pg": "^8.13.1",
+    "nodemailer": "^6.9.16",
+    "sharp": "^0.35.3"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "keywords": [
+    "rpg",
+    "mesa",
+    "dados-3d",
+    "videochamada",
+    "socket.io",
+    "fichas-rpg"
+  ],
+  "author": "Mesa RPG Online",
+  "license": "MIT"
+}
