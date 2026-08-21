@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "mesa-rpg-online",
+  "name": "lunaria",
   "main": "src/worker.mjs",
   "compatibility_date": "2026-08-21",
   "containers": [
